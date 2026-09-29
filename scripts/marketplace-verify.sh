@@ -5,7 +5,10 @@
 #   marketplace-verify.sh [<manifest>]        (default ./marketplace.toml)
 #
 # Steps, in the checkout (nothing is copied):
-#   1. `grim export marketplace --marketplace <manifest> --format json`
+#   1. No git submodule (mode 160000 entry) may sit at, beneath or above an
+#      owned path: git reports neither changes inside a gitlink nor the
+#      untracked files under it, so step 2 could not see a regenerated tree
+#      there. Then `grim export marketplace --marketplace <manifest> --format json`
 #      regenerates the marketplace files and trees where they live, from the
 #      committed `<stem>.lock`. A curator edit to the manifest that the lock
 #      does not cover shows up as a difference in step 2 (or fails here).
@@ -56,7 +59,28 @@ table_file() {
 }
 table_clients="claude copilot codex qoder cursor"
 
-echo "verify: 1/4 regenerating in place"
+# The owned paths: the lock, every marketplace file, every client directory.
+set -- "$lock"
+for c in $table_clients; do
+    set -- "$@" "$rel$(table_file "$c")" "$rel$c/"
+done
+printf '%s\n' "$@" >"$work/owned"
+
+echo "verify: 1/4 no submodule on an owned path, regenerating in place"
+git ls-files -s -z | tr '\0' '\n' | awk -F'\t' '
+    NR == FNR { o = $0; sub(/\/$/, "", o); own[++n] = o; next }
+    $1 ~ /^160000 / {
+        p = $2
+        for (i = 1; i <= n; i++)
+            if (p == own[i] || index(own[i] "/", p "/") == 1 || index(p "/", own[i] "/") == 1) {
+                print p; break
+            }
+    }
+' "$work/owned" - >"$work/gitlinks"
+if [ -s "$work/gitlinks" ]; then
+    sed 's/^/verify:   /' <"$work/gitlinks" >&2
+    die "a git submodule overlaps an owned path (paths above)"
+fi
 grim export marketplace --marketplace "$manifest" --format json >"$work/verify.json" ||
     die "grim export marketplace failed"
 
@@ -78,10 +102,6 @@ while IFS= read -r c; do
 done <"$work/selected"
 
 echo "verify: 2/4 git status over the owned paths"
-set -- "$lock"
-for c in $table_clients; do
-    set -- "$@" "$rel$(table_file "$c")" "$rel$c/"
-done
 git status --porcelain=v1 -z --untracked-files=all --ignored=matching -- "$@" >"$work/status"
 if [ -s "$work/status" ]; then
     tr '\0' '\n' <"$work/status" | sed 's/^/verify:   /' >&2

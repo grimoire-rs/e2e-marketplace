@@ -6,7 +6,8 @@ name: marketplace
 #
 # Repository settings this workflow relies on:
 #   - a protected default branch, the `verify` check required, CODEOWNERS
-#     review required on .github/, scripts/, ocx.toml and ocx.lock
+#     review required on .github/, scripts/, ocx.toml, ocx.lock,
+#     marketplace.toml and marketplace.lock
 #   - EITHER the repository variable APP_ID and the secret APP_PRIVATE_KEY of
 #     a GitHub App (Contents and Pull requests: write, never Workflows), kept
 #     in an Environment restricted to the default branch,

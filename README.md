@@ -180,6 +180,7 @@ local directory, because the remote repository does not exist yet.
 | Gate | `sh scripts/gate-selftest.sh` | 25 cases pass: allowed set passes; an out-of-list path, an LFS path, an oversize file and each symlink form fail |
 | Verify, clean | `scripts/marketplace-verify.sh` in a fresh clone, fresh `GRIM_HOME` | passes |
 | Verify, tampered | same, after committing a hand edit, a stray file, a deleted file, an unselected client's marketplace file or tree, or a manifest-only plugin addition | each fails with the differing path; a renamed marketplace fails in the export |
+| Verify, submodule | same script with a stub `grim`, after adding a mode 160000 entry at, beneath or above an owned path | fails before regenerating and names the path; a clean tree passes |
 | Regenerate | the `regenerate` job's `run:` blocks in a fresh clone, a local bare `origin` and a recording `gh` | unchanged tree stops before commit; a curator edit commits, verifies, pushes the bot branch and opens one pull request |
 
 Not run: the workflows on GitHub, the App token path, `git push` to a real
