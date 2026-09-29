@@ -90,9 +90,11 @@ attribute is `lfs`, or a file over `MAX_FILE_BYTES` (10 MiB).
 `git status` to show nothing over the lock, every marketplace file and every
 client directory; it fails when a client the export does not select has tracked
 content; then it runs `claude plugin validate` (no `--strict`) on the Claude
-marketplace file and every `claude/<plugin>`. A pull request that edits only
-`marketplace.toml` fails until the bot pull request lands, which is the
-intended two-step flow.
+marketplace file and every `claude/<plugin>`. The normal change is one pull
+request that edits `marketplace.toml` and commits the output of
+`grim update --marketplace` and `grim export marketplace`, so `verify` is green.
+A pull request that edits only `marketplace.toml` fails until the bot pull
+request lands, which is the fallback flow. The daily schedule refreshes pins.
 
 ### Settings
 
@@ -107,10 +109,16 @@ intended two-step flow.
   run, so the required check stays pending: close and reopen the bot pull
   request (a human event) to run it. The regenerate job has already verified
   the tree before it pushed.
-- **Private registry (optional).** Variables `MARKETPLACE_REGISTRY` and
-  `MARKETPLACE_REGISTRY_USER`, secret `MARKETPLACE_REGISTRY_PASSWORD`. Use a
-  read-only account: `verify.yml` reads the secret on a same-repository pull
-  request, never on a fork.
+- **Private registry (optional).** The `regenerate` job logs in with variables
+  `MARKETPLACE_REGISTRY` and `MARKETPLACE_REGISTRY_USER` and the secret
+  `MARKETPLACE_REGISTRY_PASSWORD`, all held in the `marketplace` Environment
+  (restricted to the default branch). `verify.yml` never reads them: it runs
+  pull-request code, and a secret it read would be readable by anyone who can
+  open a pull request from a branch. This repository reads public packages
+  only, so `verify.yml` has no login. To verify a marketplace with private
+  members, add a login step that uses a **separate pull-only read credential**
+  and accept that anyone with write access can read it. Never reuse the
+  `regenerate` credential there.
 - **Keepalive.** A public repository's scheduled workflows are disabled after 60
   days without activity. The `keepalive` job calls the enable endpoint with only
   `actions: write`; whether that resets the timer is unverified, so if the
@@ -121,7 +129,10 @@ intended two-step flow.
 Under `pull_request` the workflows, `scripts/` and the tool pins (`ocx.toml`,
 `ocx.lock`) come from the pull request head, so a pull request can replace the
 verifier. `CODEOWNERS` with required code-owner review on `.github/`,
-`scripts/`, `ocx.toml` and `ocx.lock` is the mitigation. A compromised upstream
+`scripts/`, `ocx.toml` and `ocx.lock` is the mitigation. `CODEOWNERS` also covers
+`marketplace.toml` and `marketplace.lock`: verification proves the output
+renders the committed inputs, not where the pins came from, so the lock diff is
+the review surface. A compromised upstream
 artifact is out of scope: review shrinks the exposure window and is not a control
 against it.
 

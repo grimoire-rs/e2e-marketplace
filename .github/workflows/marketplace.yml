@@ -44,8 +44,9 @@ jobs:
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # The App private key and the registry password live in this environment;
-    # restrict it to the default branch in Settings > Environments.
+    # The App private key and the optional registry credential live only in this
+    # environment (the `verify` workflow reads neither); restrict it to the
+    # default branch in Settings > Environments.
     environment: marketplace
     permissions:
       contents: write # push the bot branch (or the default branch in push mode)

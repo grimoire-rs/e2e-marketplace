@@ -7,3 +7,7 @@
 /scripts/**   @michael-herwig
 /ocx.toml     @michael-herwig
 /ocx.lock     @michael-herwig
+# The pins are the review surface: the verifier proves the output renders the
+# committed inputs, not where the pins came from.
+/marketplace.lock  @michael-herwig
+/marketplace.toml  @michael-herwig

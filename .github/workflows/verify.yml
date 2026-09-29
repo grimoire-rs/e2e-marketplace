@@ -9,6 +9,12 @@ name: verify
 # skips it. Under `pull_request` the workflow, the scripts and the tool pins
 # come from the PR head; CODEOWNERS review on those paths is what keeps a PR
 # from swapping the verifier.
+#
+# No registry credential is used here: the job runs PR-head code, so any secret
+# it read would be readable by anyone who can open a pull request from a branch.
+# The showcase reads public packages only. Verifying a private registry needs a
+# separate pull-only credential that you accept is readable by anyone with write
+# access; see the README.
 
 on:
   pull_request:
@@ -50,18 +56,6 @@ jobs:
       - name: Install claude
         # Exact version, headless: no login is needed for `plugin validate`.
         run: npm install -g @anthropic-ai/claude-code@2.1.284
-
-      - name: Registry login
-        # Credentials only for a head in this repository, never for a fork.
-        if: ${{ vars.MARKETPLACE_REGISTRY != '' && github.event.pull_request.head.repo.full_name == github.repository }}
-        env:
-          REGISTRY: ${{ vars.MARKETPLACE_REGISTRY }}
-          REGISTRY_USER: ${{ vars.MARKETPLACE_REGISTRY_USER }}
-          REGISTRY_PASSWORD: ${{ secrets.MARKETPLACE_REGISTRY_PASSWORD }}
-        run: |
-          set -eu
-          printf '%s' "$REGISTRY_PASSWORD" |
-            grim login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin --allow-insecure-store
 
       - name: Verify the marketplace
         run: sh scripts/marketplace-verify.sh "$MANIFEST"
