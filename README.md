@@ -14,6 +14,16 @@ public registries:
 | `grim-essentials` | `ghcr.io/grimoire-rs/bundles/grim-essentials:0` |
 | `hex` | `ghcr.io/michael-herwig/arcana/hex:0` |
 
+## Prerequisites
+
+The daily refresh opens a pull request from the bot branch, so the repository
+needs one of these before it can: a GitHub App (`APP_ID` variable,
+`APP_PRIVATE_KEY` secret), or "Allow GitHub Actions to create and approve pull
+requests" enabled in the organization and the repository settings. Without
+either, the `regenerate` job pushes `grim/marketplace` and then fails with one
+error that names both fixes and links the compare page, so the pull request can
+be opened by hand. See [Settings](#settings).
+
 ## Layout
 
 Nothing under the generated paths is edited by hand. `grim export marketplace`
@@ -109,6 +119,12 @@ request lands, which is the fallback flow. The daily schedule refreshes pins.
   run, so the required check stays pending: close and reopen the bot pull
   request (a human event) to run it. The regenerate job has already verified
   the tree before it pushed.
+- **Organization policy.** In an organization repository the organization
+  setting "Allow GitHub Actions to create and approve pull requests" overrides
+  the repository one. `grimoire-rs` forbids it today, and this repository has no
+  App key yet, so the fallback cannot open the pull request here. The run then
+  pushes the bot branch and fails with one error naming both fixes: allow the
+  setting at organization and repository level, or add the App secrets.
 - **Private registry (optional).** The `regenerate` job logs in with variables
   `MARKETPLACE_REGISTRY` and `MARKETPLACE_REGISTRY_USER` and the secret
   `MARKETPLACE_REGISTRY_PASSWORD`, all held in the `marketplace` Environment
@@ -138,17 +154,14 @@ against it.
 
 ## Pinning a dev build
 
-`ocx.toml` binds `grim` to a dev build published at `dev.ocx.sh/grimoire/cli`.
-The tag in this commit is a placeholder (`0.15.0-dev_PENDING`). Set the
-published tag, lock it, and commit both files in one change:
+`ocx.toml` binds `grim` to a dev build published at `dev.ocx.sh/grimoire/cli`,
+currently `0.15.0-dev_20260929033644`, and `ocx.lock` pins its digest. To move
+to a newer build, change the tag, lock it, and commit both files in one change:
 
 ```sh
 # ocx.toml: grim = "dev.ocx.sh/grimoire/cli:<version>-dev_<UTC timestamp>"
 ocx lock
 ```
-
-Until `ocx.lock` exists, `setup-ocx` has nothing to pull and the workflows fail
-at the install step.
 
 ## The one step that differs from the documented workflow
 

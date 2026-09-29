@@ -12,7 +12,10 @@ name: marketplace
 #     a GitHub App (Contents and Pull requests: write, never Workflows), kept
 #     in an Environment restricted to the default branch,
 #     OR the fallback: Settings > Actions > General > "Allow GitHub Actions to
-#     create and approve pull requests" with the default GITHUB_TOKEN.
+#     create and approve pull requests" with the default GITHUB_TOKEN. In an
+#     organization repository the organization setting must allow it too;
+#     when it does not, the run pushes the branch and then fails, naming both
+#     fixes.
 #     Pull requests opened with GITHUB_TOKEN start no `pull_request` run, so
 #     this job verifies the tree itself before it pushes.
 
@@ -168,10 +171,14 @@ jobs:
           pr=$(gh pr list --head "$BRANCH" --base "$DEFAULT_BRANCH" --state open --json number --jq '.[0].number // empty')
           if [ -n "$pr" ]; then
             gh pr edit "$pr" --body-file "$RUNNER_TEMP/body.md"
-          else
-            gh pr create --head "$BRANCH" --base "$DEFAULT_BRANCH" \
-              --title "chore(marketplace): regenerate the marketplace" \
-              --body-file "$RUNNER_TEMP/body.md"
+          elif ! gh pr create --head "$BRANCH" --base "$DEFAULT_BRANCH" \
+            --title "chore(marketplace): regenerate the marketplace" \
+            --body-file "$RUNNER_TEMP/body.md"; then
+            # The branch is pushed; only the pull request is missing. An
+            # organization that forbids Actions to create pull requests
+            # refuses GITHUB_TOKEN here, so fail loudly with both fixes.
+            echo "::error title=Pull request not opened::Branch $BRANCH is pushed, but GitHub refused to open its pull request (reason above). Fix one: allow 'GitHub Actions to create and approve pull requests' in the organization settings and the repository settings, or install a GitHub App and set the APP_ID variable and APP_PRIVATE_KEY secret. Then re-run this workflow. To open the pull request by hand now: $GITHUB_SERVER_URL/$GH_REPO/compare/$DEFAULT_BRANCH...$BRANCH?expand=1"
+            exit 1
           fi
 
   keepalive:
