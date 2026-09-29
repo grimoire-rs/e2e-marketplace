@@ -1,0 +1,165 @@
+# Agent Spec
+
+You loaded this file because you are authoring or fixing a grim agent —
+a single `.md` defining a delegatable assistant — for `grim build` or
+`grim release`.
+
+Contents: [The #1 Pitfall](#the-1-pitfall) · [File Shape](#file-shape) ·
+[Frontmatter](#frontmatter) · [Vendor Overrides](#vendor-overrides) ·
+[Per-Client Emit](#per-client-emit) · [Limitations](#limitations) ·
+[Minimal Example](#minimal-example) · [Validation Pitfalls](#validation-pitfalls)
+
+## The #1 Pitfall
+
+**`--kind agent` is required at build and release:**
+
+```sh
+grim build ./reviewer.md --kind agent
+grim release ./reviewer.md ghcr.io/acme/reviewer:1.0.0 --kind agent
+```
+
+A bare `.md` path is indistinguishable from a rule by shape, and grim
+never guesses from content — without the flag your agent **silently
+packs as a rule**. This is not an error; the only signal is a warning
+when a rule carries both `name` and `description`. Consumers need no
+flag: `grim add` infers the kind from the published manifest's kind
+metadata (the `com.grimoire.kind` annotation).
+
+## File Shape
+
+One `.md` file. Unlike rules, frontmatter is **required** — every client
+needs at least a `description` to route work to the agent. The body
+below the frontmatter is the system prompt and installs verbatim for
+every client.
+
+## Frontmatter
+
+| Field | Required | Notes |
+|---|---|---|
+| `name` | yes | Must equal the file stem (`reviewer.md` → `name: reviewer`); standard name rules |
+| `description` | yes | When a client should delegate to this agent |
+| `model` | no | Passed through verbatim — **no alias translation** between clients |
+| `tools` | no | Comma-separated allowlist, projected per client (string vs. list) |
+| `metadata` | no | Catalog keys (`summary`, `keywords`, `license`, `repository`, `deprecated`, `replaced-by`) **plus** vendor keys — agent catalog metadata lives inside `metadata`, like a skill |
+
+## Vendor Overrides
+
+`model` and `tools` are *defaults*. When a vendor key lifts to the same
+native field, the vendor key wins **for that vendor — silently**; the
+collision is the documented escape hatch:
+
+```yaml
+model: sonnet
+metadata:
+  claude.model: opus                            # Claude gets opus
+  opencode.model: anthropic/claude-sonnet-4-5   # OpenCode gets this
+```
+
+This matters most for `model`: Claude reads aliases like `sonnet`, while
+OpenCode expects `provider/model-id`. Set `opencode.model` whenever the
+common value is not OpenCode-shaped. Everything one vendor understands
+(`claude.permission-mode`, `opencode.temperature`, `cursor.readonly`,
+`gemini.temperature`, …) is a string key in `metadata` — registries are
+linked from [vendor-metadata.md](vendor-metadata.md).
+
+## Per-Client Emit
+
+**Only a minority of clients host an agent at all** — decide up front
+whether your audience is in that set:
+
+| Client | Registry | Emit |
+|---|---|---|
+| Claude Code | `claude.*` (richest) | The canonical format itself — a plain agent installs byte-identical, no provenance comment |
+| OpenCode | `opencode.*` | Drops `name` (the filename is its identity) and drops `tools` with a warning (deprecated upstream in favor of `permission`) |
+| Copilot | `copilot.*` | Emits `name`, `description`, `model`, and `tools` as a YAML list; `copilot.disable-model-invocation`/`copilot.user-invocable` (bool) and `copilot.target` (`vscode` \| `github-copilot`) project straight through |
+| Codex | `codex.*` | **TOML** (see below) |
+| Cursor | `cursor.*` | Markdown frontmatter; the common `tools` has no equivalent and is dropped with a warning |
+| Gemini CLI | `gemini.*` | Markdown frontmatter; Gemini loads agents only when its `experimental.enableAgents` setting is on (the default) |
+| Junie | `junie.*` | Markdown frontmatter; `tools` emitted as a YAML list; `junie.permission-mode`, `junie.reasoning-level`, `junie.max-turns` lift to `permissionMode`, `reasoningLevel`, `maxTurns`. Junie accepts only names matching `[a-z][a-z0-9_-]*` — a name with a leading digit or a `.` is skipped for Junie with a warning, never renamed |
+| Droid | `droid.*` | Markdown frontmatter at `.factory/droids/`; `tools` emitted as a YAML list of tool ids, `model` verbatim (`inherit` included), `droid.reasoning-effort` → `reasoningEffort`. A name containing `.` is skipped for Droid with a warning; a dotted frontmatter `name` under an accepted binding is written as the binding name. A lone `tools` category still renders as a list, which Droid reads as a tool id |
+| Antigravity | *(none yet)* | Markdown frontmatter; `tools` emitted as a YAML list (upstream types it `string[]`). The namespace is reserved but its agent registry is empty, so an `antigravity.*` key warns and drops |
+| Goose | *(none)* | Markdown frontmatter at `.goose/agents/`; `name`, `description` and `model` only, `tools` dropped with a warning |
+| Kilo | `kilo.*` | OpenCode's shape: drops `name` (the filename is its identity) and drops `tools` with a warning; `kilo.mode`, `kilo.temperature`, `kilo.steps` and friends lift |
+| Qoder | *(none yet)* | Claude's shape — a plain agent installs byte-identical, no provenance comment. The namespace is reserved but its agent registry is empty, so a `qoder.*` key warns and drops |
+
+Every emit but Claude's carries a provenance comment. **Every other
+client declines agents** — one (Cline's
+CLI surface) documents an installable format grim does not render yet;
+the rest have no installable format at all, save Kiro, blocked instead
+by a CLI/IDE schema collision — an incompatible format already occupies
+the same directory — so grim warns, skips, and writes nothing. Their
+namespaces are
+still reserved but carry **no populated registry for any kind**: such a
+key hits an empty registry and is
+warned + dropped, the same typo-guard outcome as a misspelt key in a
+populated one.
+
+Codex emits its TOML at `.codex/agents/<name>.toml`. The body becomes
+`developer_instructions`; `name` and `description` map directly; `model`
+is optional; `tools` is dropped with a warning. Its three keys —
+`codex.model`, `codex.reasoning-effort` (`ultra` | `max` | `xhigh` |
+`high` | `medium` | `low` | `minimal` | `none` | `persistent` — Codex
+before 0.138 skips an agent file carrying `max`, `ultra` or `persistent`;
+`persistent` is a named value from 0.151), `codex.sandbox-mode`
+(`read-only` | `workspace-write` | `danger-full-access`) — live in
+`metadata` like any vendor key.
+
+Full matrix: [emit matrix][emit-matrix] · [client compatibility][clients].
+
+## Limitations
+
+- **No object-valued vendor fields** — `metadata` is string-valued, so
+  Claude's `mcpServers`/`hooks`, OpenCode's `permission`, and Copilot's
+  `mcp-servers` cannot be authored; add them post-install.
+- **No support directory** — an agent installs as exactly one file
+  (`<name>.md`, or `<name>.toml` for Codex). A sibling directory sharing
+  the stem is read **only** for the well-known companions `README.md`,
+  `logo.png`, and `logo.svg`:
+  those three ride the published layer (under `<name>/…`, for
+  `grim fetch --path` and catalog UIs) but are never installed to a
+  client; every other file in that directory is ignored
+  ([well-known assets][well-known]).
+- **No model translation** — see vendor overrides above.
+
+## Minimal Example
+
+```yaml
+# reviewer.md
+---
+name: reviewer
+description: Reviews a diff for correctness, style, and missing tests.
+---
+
+You are a code reviewer. Examine the diff...
+```
+
+## Validation Pitfalls
+
+| Pitfall | Outcome |
+|---|---|
+| Forgetting `--kind agent` | **Not an error** — packs as a rule; grim warns only that the rule looks agent-shaped |
+| No frontmatter at all | Hard error, exit 65 — frontmatter is required for agents |
+| Missing `name` or `description` | Hard error, exit 65 — frontmatter parse |
+| `name` ≠ file stem | Hard error, exit 65 — name mismatch |
+| Known vendor key, bad literal (`claude.permission-mode: yolo`) | Hard error, exit 65 — publish stops |
+| Typo'd own-namespace key (`opencode.temprature`) | Warning + dropped |
+| Sibling dir sharing the stem | Only `README.md`/`logo.png`/`logo.svg` pack (catalog companions, never installed); everything else silently ignored |
+| Vendor key shadowing a common field | Silent override per vendor — a feature, but a surprise when unintended |
+| `repository` not `https://` | Hard error, exit 65 |
+
+## Further Reading
+
+- [Agent Artifacts][agents-doc] — canonical format, locations, consuming.
+- [Agent schema][artifacts-agents] — the authoritative field table.
+- [Override precedence][precedence] — the shadow semantics in full.
+- [Agent vendor registries][registries] — every projectable key per vendor.
+- [Catalog metadata for agents][pub-agent] — `metadata` map placement.
+
+[agents-doc]: https://grimoire.rs/agents.html
+[artifacts-agents]: https://grimoire.rs/artifacts.html#agents
+[well-known]: https://grimoire.rs/artifacts.html#well-known-assets
+[precedence]: https://grimoire.rs/agents.html#override-precedence
+[emit-matrix]: https://grimoire.rs/agents.html#emit-matrix
+[clients]: https://grimoire.rs/clients.html
+[registries]: https://grimoire.rs/vendor-metadata.html#claude-agent-registry
+[pub-agent]: https://grimoire.rs/publishing.html#metadata-agent

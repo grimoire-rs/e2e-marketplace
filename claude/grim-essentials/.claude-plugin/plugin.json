@@ -1,0 +1,5 @@
+{
+  "name": "grim-essentials",
+  "version": "0.0.0+8308647d3f8d",
+  "description": "Grimoire first-party skills: the grim CLI, AI-config authoring, and grim artifact authoring"
+}

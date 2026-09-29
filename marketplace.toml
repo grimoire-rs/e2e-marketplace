@@ -1,0 +1,12 @@
+[marketplace]
+name = "grimoire-e2e"
+owner = { name = "Grimoire" }
+description = "End-to-end showcase of a grim-generated plugin marketplace"
+
+[plugins.grim-essentials]
+include = ["ghcr.io/grimoire-rs/bundles/grim-essentials:0"]
+description = "Grimoire first-party skills: the grim CLI, AI-config authoring, and grim artifact authoring"
+
+[plugins.hex]
+include = ["ghcr.io/michael-herwig/arcana/hex:0"]
+description = "Tiered multi-agent swarm orchestration: plan, execute, review, architect"

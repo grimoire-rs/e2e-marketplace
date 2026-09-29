@@ -1,0 +1,23 @@
+{
+  "name": "grimoire-e2e",
+  "owner": {
+    "name": "Grimoire"
+  },
+  "metadata": {
+    "description": "End-to-end showcase of a grim-generated plugin marketplace"
+  },
+  "plugins": [
+    {
+      "name": "grim-essentials",
+      "source": "./copilot/grim-essentials",
+      "version": "0.0.0+4561e2e2ae9f",
+      "description": "Grimoire first-party skills: the grim CLI, AI-config authoring, and grim artifact authoring"
+    },
+    {
+      "name": "hex",
+      "source": "./copilot/hex",
+      "version": "0.0.0+63fda6d64b9c",
+      "description": "Tiered multi-agent swarm orchestration: plan, execute, review, architect"
+    }
+  ]
+}

@@ -1,0 +1,108 @@
+# Updating This Guide
+
+You loaded this file because you maintain the ai-config-authoring package
+and need to refresh its claims against current vendor reality.
+
+## Re-Research Procedure
+
+1. **Re-fetch the primary sources** (Further Reading below) and diff
+   against what this package claims — especially activation mechanics,
+   scan paths, and frontmatter fields.
+2. **Check the spec and client changelogs** for new fields, new artifact
+   types, or changed defaults since the last revision.
+3. **Re-survey flagship community packs** for norm drift: measured body
+   lengths, frontmatter usage in the wild, description conventions.
+4. **Re-verify every hard number before trusting it** — see below.
+
+## Hard Numbers Drift Fastest
+
+Limits, rates, and caps decay first: truncation thresholds, listing
+budgets, character caps, activation-rate studies, adopter counts.
+Everything marked "(as of 2026; re-verify)" is suspect after roughly six
+months. The principles — progressive disclosure, the deletion test,
+triggering-conditions-only descriptions, hooks for invariants — are
+durable; update the numbers, keep the spine.
+
+## Durable Search Terms
+
+- `agentskills.io specification frontmatter`
+- `skills-ref validate agentskills`
+- `claude code memory rules paths frontmatter site:code.claude.com`
+- `claude skill description triggering undertriggering overtriggering`
+- `opencode rules instructions glob always loaded`
+- `copilot custom instructions support matrix applyTo instructions.md`
+- `codex skills subagents AGENTS.md site:developers.openai.com`
+- `cursor rules mdc globs alwaysApply subagents site:cursor.com`
+- `kiro steering inclusion fileMatchPattern skills site:kiro.dev`
+- `junie skills agents guidelines site:jetbrains.com`
+- `gemini cli subagents enableAgents GEMINI.md site:geminicli.com`
+- `zed rules precedence agent client protocol site:zed.dev`
+- `amp AGENTS.md skills subagents site:ampcode.com`
+- `antigravity subagents mcp agents rules site:antigravity.google`
+- `cline clinerules skills directories site:cline.bot`
+- `goose skills .agents/skills recommended location site:goose-docs.ai`
+- `warp skills directory site:warp.dev`
+- `kilo modes skills site:kilo.ai`
+- `agents skills shared pool which clients scan`
+- `AGENTS.md standard adoption nearest file precedence`
+- `skills not activating subagent headless`
+- `anthropic effective context engineering attention budget`
+
+## Further Reading
+
+- [Agent Skills specification][spec] — re-check format constraints first.
+- [Claude Code: memory][cc-mem] / [skills][cc-skills] /
+  [sub-agents][cc-agents] / [hooks][cc-hooks] + the [changelog][cc-log].
+- [OpenCode: rules][oc-rules] / [skills][oc-skills] / [agents][oc-agents].
+- [Copilot: instructions support matrix][cop-matrix] /
+  [agent skills][cop-skills] — surface support changes often.
+- [Codex: skills][cx-skills] / [subagents][cx-agents] — AGENTS.md-only
+  always-on surface, no rule mechanism; re-verify both claims here.
+- [Cursor: subagents][cur-agents] / [Kiro][kiro] — the newer clients with
+  both rule scoping and (Cursor only) an agent file; re-verify the
+  comma-in-glob split and Kiro's user-scope steering bug.
+- [Gemini CLI: subagents][gem-agents] — re-verify the enabling setting and
+  the enterprise-vs-individual serving status.
+- [Junie][junie] — hosts rules (degraded, project scope only), agents, and
+  MCP; re-check whether global-scope rules have shipped.
+- [Zed][zed] / [Amp][amp] — decline rules and agents, still register MCP;
+  re-check whether either has since shipped a rule or agent surface.
+- The skills-first wave — [Antigravity][ag] (the one with a subagent
+  file), [Cline][cline] (the one with real `.clinerules/` `paths:`
+  scoping), [Droid][droid] (agents and MCP now rendered), [Goose][goose], [Warp][warp],
+  [OpenClaw][openclaw], [Kilo][kilo]. Re-check two things specifically:
+  whether any has since shipped a rule or agent surface, and **which of
+  them read `.agents/skills`** — pool membership is the fastest-moving
+  claim in this package, and reading the pool is not the same as writing
+  to it.
+- [Skill authoring best practices][bp] and the
+  [official example skills][repo] — re-measure body-length norms there.
+
+[spec]: https://agentskills.io/specification
+[cc-mem]: https://code.claude.com/docs/en/memory
+[cc-skills]: https://code.claude.com/docs/en/skills
+[cc-agents]: https://code.claude.com/docs/en/sub-agents
+[cc-hooks]: https://code.claude.com/docs/en/hooks
+[cc-log]: https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md
+[oc-rules]: https://opencode.ai/docs/rules/
+[oc-skills]: https://opencode.ai/docs/skills/
+[oc-agents]: https://opencode.ai/docs/agents/
+[cop-matrix]: https://docs.github.com/en/copilot/reference/custom-instructions-support
+[cop-skills]: https://docs.github.com/en/copilot/concepts/agents/about-agent-skills
+[cx-skills]: https://developers.openai.com/codex/skills
+[cx-agents]: https://developers.openai.com/codex/subagents
+[cur-agents]: https://cursor.com/docs/context/subagents
+[kiro]: https://kiro.dev
+[gem-agents]: https://geminicli.com/docs/core/subagents
+[junie]: https://www.jetbrains.com/junie/
+[zed]: https://zed.dev
+[amp]: https://ampcode.com
+[ag]: https://antigravity.google
+[cline]: https://cline.bot
+[droid]: https://factory.ai
+[goose]: https://goose-docs.ai
+[warp]: https://warp.dev
+[openclaw]: https://github.com/openclaw/openclaw
+[kilo]: https://kilo.ai
+[bp]: https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices
+[repo]: https://github.com/anthropics/skills
