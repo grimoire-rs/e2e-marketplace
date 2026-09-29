@@ -5,9 +5,7 @@
 # `ocx.lock` and from `.github/workflows/`, which is why CODEOWNERS covers
 # all three.
 #
-# PENDING: the tag below is a placeholder. Replace it with the published dev
-# tag (`<version>-dev_<UTC timestamp>`), then run `ocx lock` and commit the
-# resulting `ocx.lock` in the same change. Until then `setup-ocx` has no lock
-# to pull and the workflows fail at the install step.
+# The tag is a timestamped dev build (`<version>-dev_<UTC timestamp>`). To move
+# it, change the tag, run `ocx lock` and commit `ocx.lock` in the same change.
 [tools]
-grim = "dev.ocx.sh/grimoire/cli:0.15.0-dev_PENDING"
+grim = "dev.ocx.sh/grimoire/cli:0.15.0-dev_20260929033644"

@@ -1,0 +1,15 @@
+[metadata]
+lock_version = 3
+declaration_hash_version = 1
+declaration_hash = "sha256:57cd95d0fb7358346852ef6c8d7b577b8c286190a4069ef0b37d91cbe58c3e84"
+generated_by = "ocx 0.6.3"
+generated_at = "2026-09-29T08:16:20Z"
+
+[[tool]]
+name = "grim"
+group = "default"
+repository = "dev.ocx.sh/grimoire/cli"
+
+[tool.platforms]
+"linux/amd64" = "sha256:0ee0a87fd23c012d22b1f1cf81055ce88195dafb2b8052053dc0297e7bd92df3"
+"linux/arm64" = "sha256:a38d40a937eb596423c583ff4b93a06bb9784f1f48fe4ba3af13412caba8f3f6"
