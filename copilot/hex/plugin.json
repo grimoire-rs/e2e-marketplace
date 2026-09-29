@@ -1,6 +1,13 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "hex",
-  "version": "0.0.0+63fda6d64b9c",
-  "description": "Tiered multi-agent swarm orchestration: plan, execute, review, architect"
+  "version": "0.0.0+367f93773a82",
+  "description": "Tiered multi-agent swarm orchestration: plan, execute, review, architect",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "logo": "./assets/logo.png"
+      }
+    }
+  }
 }
