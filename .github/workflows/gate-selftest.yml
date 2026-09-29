@@ -1,0 +1,31 @@
+name: gate-selftest
+
+# Runs scripts/marketplace-gate.sh and scripts/pr-body.sh against crafted
+# repositories and reports: an out-of-list path, an LFS path, an oversize file
+# and a symlink must each fail; the allowed set must pass. No secrets, no
+# network beyond checkout.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Gate and PR-body cases
+        run: sh scripts/gate-selftest.sh

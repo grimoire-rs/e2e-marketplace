@@ -1,0 +1,190 @@
+name: marketplace
+
+# Regenerates the marketplace from marketplace.toml and delivers the result as
+# one pull request (mode merge-request, the default) or as a push to the
+# default branch (mode push, only for a marketplace of trusted registries).
+#
+# Repository settings this workflow relies on:
+#   - a protected default branch, the `verify` check required, CODEOWNERS
+#     review required on .github/, scripts/, ocx.toml and ocx.lock
+#   - EITHER the repository variable APP_ID and the secret APP_PRIVATE_KEY of
+#     a GitHub App (Contents and Pull requests: write, never Workflows), kept
+#     in an Environment restricted to the default branch,
+#     OR the fallback: Settings > Actions > General > "Allow GitHub Actions to
+#     create and approve pull requests" with the default GITHUB_TOKEN.
+#     Pull requests opened with GITHUB_TOKEN start no `pull_request` run, so
+#     this job verifies the tree itself before it pushes.
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  push:
+    branches: [main]
+    paths: [marketplace.toml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: grim-marketplace
+  cancel-in-progress: false
+
+env:
+  MANIFEST: ./marketplace.toml
+  # merge-request | push
+  MODE: merge-request
+  BRANCH: grim/marketplace
+  MAX_FILE_BYTES: "10485760"
+
+jobs:
+  regenerate:
+    # Scheduled and pushed runs are always on the default branch; a manual run
+    # from another branch would deliver against the wrong base.
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # The App private key and the registry password live in this environment;
+    # restrict it to the default branch in Settings > Environments.
+    environment: marketplace
+    permissions:
+      contents: write # push the bot branch (or the default branch in push mode)
+      pull-requests: write # open or rewrite the one bot pull request
+    env:
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - name: Token
+        id: app
+        if: ${{ vars.APP_ID != '' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          # Down-scoped to this repository; never `workflows`.
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Check out the default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The token is handed to git only for the push below.
+          persist-credentials: false
+
+      - name: Install grim
+        # The one step that differs from the documented workflow: grim comes
+        # from ocx.toml (a dev build), not from a release tarball plus sha256.
+        uses: ocx-sh/setup-ocx@25fa771f8572572dc64528db89560de68a163a0e # v1.4.0
+        with:
+          version: "0.6.3"
+          # A job that holds a write token restores no shared cache.
+          cache: "false"
+
+      - name: Registry login
+        if: ${{ vars.MARKETPLACE_REGISTRY != '' }}
+        env:
+          REGISTRY: ${{ vars.MARKETPLACE_REGISTRY }}
+          REGISTRY_USER: ${{ vars.MARKETPLACE_REGISTRY_USER }}
+          REGISTRY_PASSWORD: ${{ secrets.MARKETPLACE_REGISTRY_PASSWORD }}
+        run: |
+          set -eu
+          printf '%s' "$REGISTRY_PASSWORD" |
+            grim login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin --allow-insecure-store
+
+      - name: Regenerate
+        run: |
+          set -eu
+          grim update --marketplace "$MANIFEST" --format json >"$RUNNER_TEMP/update.json"
+          grim export marketplace --marketplace "$MANIFEST" --format json >"$RUNNER_TEMP/export.json"
+
+      - name: Policy gate
+        run: sh scripts/marketplace-gate.sh "$MANIFEST" "$RUNNER_TEMP/export.json"
+
+      - name: Anything to commit
+        id: status
+        run: |
+          set -eu
+          if [ -z "$(git status --porcelain=v1 --untracked-files=all)" ]; then
+            echo "changed=false" >>"$GITHUB_OUTPUT"
+            echo "The marketplace is up to date."
+          else
+            echo "changed=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit as the bot
+        if: steps.status.outputs.changed == 'true'
+        run: |
+          set -eu
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "chore(marketplace): regenerate the marketplace"
+
+      - name: Set up Node (GITHUB_TOKEN fallback only)
+        if: steps.status.outputs.changed == 'true' && steps.app.outcome == 'skipped'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Verify the committed tree (GITHUB_TOKEN fallback only)
+        # With the fallback token the pull request starts no `verify` run, so
+        # the same check runs here, after the commit and before the push.
+        if: steps.status.outputs.changed == 'true' && steps.app.outcome == 'skipped'
+        run: |
+          set -eu
+          npm install -g @anthropic-ai/claude-code@2.1.284
+          sh scripts/marketplace-verify.sh "$MANIFEST"
+
+      - name: Deliver
+        if: steps.status.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          git check-ref-format --branch "$BRANCH" >/dev/null
+          [ "$BRANCH" != "$DEFAULT_BRANCH" ] || { echo "BRANCH must not be the default branch" >&2; exit 1; }
+
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"
+
+          if [ "$MODE" = push ]; then
+            git push origin "HEAD:refs/heads/$DEFAULT_BRANCH"
+            exit 0
+          fi
+          [ "$MODE" = merge-request ] || { echo "MODE must be merge-request or push" >&2; exit 1; }
+
+          # One bot branch, rewritten in place. The lease names the tip this
+          # run saw (empty: the branch must not exist yet), so a concurrent
+          # writer makes the push fail instead of being overwritten.
+          seen=$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)
+          git push --force-with-lease="refs/heads/$BRANCH:$seen" origin "HEAD:refs/heads/$BRANCH"
+
+          sh scripts/pr-body.sh "$RUNNER_TEMP/update.json" "$RUNNER_TEMP/export.json" >"$RUNNER_TEMP/body.md"
+          pr=$(gh pr list --head "$BRANCH" --base "$DEFAULT_BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$pr" ]; then
+            gh pr edit "$pr" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh pr create --head "$BRANCH" --base "$DEFAULT_BRANCH" \
+              --title "chore(marketplace): regenerate the marketplace" \
+              --body-file "$RUNNER_TEMP/body.md"
+          fi
+
+  keepalive:
+    # Scheduled workflows in a public repository are disabled after 60 days
+    # without repository activity. Re-enabling the workflow is the documented
+    # remedy; whether calling it early resets the timer is unverified, so the
+    # README also names the manual re-enable.
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write # the only scope: PUT .../actions/workflows/{id}/enable
+    steps:
+      - name: Re-enable this workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh api --method PUT "repos/$GH_REPO/actions/workflows/marketplace.yml/enable"

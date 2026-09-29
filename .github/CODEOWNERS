@@ -1,0 +1,9 @@
+# Everything a verifier or a write-token job trusts. Under `pull_request` the
+# workflow files, the scripts and the tool pins come from the PR head, so a PR
+# can swap the verifier: required code-owner review on these paths is the
+# mitigation (with "Require review from Code Owners" enabled in branch
+# protection).
+/.github/**   @michael-herwig
+/scripts/**   @michael-herwig
+/ocx.toml     @michael-herwig
+/ocx.lock     @michael-herwig

@@ -1,0 +1,13 @@
+#:schema https://ocx.sh/schemas/project/v1.json
+# Toolchain of the workflows. `ocx-sh/setup-ocx` (project mode) installs grim
+# from here, so a dev build is consumed the way any tool is, with no release
+# tarball. Everything the verifier trusts comes from this file, from
+# `ocx.lock` and from `.github/workflows/`, which is why CODEOWNERS covers
+# all three.
+#
+# PENDING: the tag below is a placeholder. Replace it with the published dev
+# tag (`<version>-dev_<UTC timestamp>`), then run `ocx lock` and commit the
+# resulting `ocx.lock` in the same change. Until then `setup-ocx` has no lock
+# to pull and the workflows fail at the install step.
+[tools]
+grim = "dev.ocx.sh/grimoire/cli:0.15.0-dev_PENDING"
