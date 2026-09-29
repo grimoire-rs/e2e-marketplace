@@ -8,7 +8,7 @@
 #   1. `grim export marketplace --marketplace <manifest> --format json`
 #      regenerates the marketplace files and trees where they live, from the
 #      committed `<stem>.lock`. A curator edit to the manifest that the lock
-#      does not cover makes this step fail.
+#      does not cover shows up as a difference in step 2 (or fails here).
 #   2. `git status` over the lock, every marketplace file and every client
 #      directory the table defines (selected or not) must print nothing:
 #      an edited, deleted, added or ignored owned file, a dropped client's
@@ -58,7 +58,7 @@ table_clients="claude copilot codex qoder cursor"
 
 echo "verify: 1/4 regenerating in place"
 grim export marketplace --marketplace "$manifest" --format json >"$work/verify.json" ||
-    die "grim export marketplace failed (a manifest change the lock does not cover fails here)"
+    die "grim export marketplace failed"
 
 awk '
     /^[ \t]*"files"[ \t]*:[ \t]*\[/ { f = 1; next }

@@ -146,11 +146,12 @@ expect pass "file exactly at MAX_FILE_BYTES" "$r"
 
 # 6. symlink -> fail
 r=$(mkrepo link)
-ln -s /etc/passwd "$r/claude/team/link"
+# a small target: only the symlink rule can reject it, not the size cap
+ln -s a.txt "$r/claude/team/link"
 expect fail "symlink inside an allowed dir" "$r"
 r=$(mkrepo link2)
 rm "$r/claude/team/a.txt"
-ln -s /etc/passwd "$r/claude/team/a.txt"
+ln -s nowhere "$r/claude/team/a.txt"
 expect fail "tracked file replaced by a symlink" "$r"
 r=$(mkrepo link3)
 rm -r "$r/claude"
