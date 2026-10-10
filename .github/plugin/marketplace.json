@@ -16,7 +16,7 @@
     {
       "name": "hex",
       "source": "./copilot/hex",
-      "version": "0.0.0+367f93773a82",
+      "version": "0.0.0+ac386aeee1a0",
       "description": "Tiered multi-agent swarm orchestration: plan, execute, review, architect"
     }
   ]

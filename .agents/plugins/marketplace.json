@@ -16,7 +16,7 @@
     {
       "name": "hex",
       "source": "./codex/hex",
-      "version": "0.0.0+8917e4771342",
+      "version": "0.0.0+4254f3001581",
       "description": "Tiered multi-agent swarm orchestration: plan, execute, review, architect"
     }
   ]
