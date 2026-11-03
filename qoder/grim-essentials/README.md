@@ -1,6 +1,6 @@
 # grim-essentials
 
-![grim-essentials](assets/logo.png)
+<img src="assets/logo.png" alt="grim-essentials" width="96">
 
 Grimoire first-party skills: the grim CLI, AI-config authoring, and grim artifact authoring
 

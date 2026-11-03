@@ -1,6 +1,6 @@
 # hex
 
-![hex](assets/logo.png)
+<img src="assets/logo.png" alt="hex" width="96">
 
 Tiered multi-agent swarm orchestration: plan, execute, review, architect
 

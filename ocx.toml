@@ -1,11 +1,11 @@
 #:schema https://ocx.sh/schemas/project/v1.json
 # Toolchain of the workflows. `ocx-sh/setup-ocx` (project mode) installs grim
-# from here, so a dev build is consumed the way any tool is, with no release
-# tarball. Everything the verifier trusts comes from this file, from
+# from here, with no release tarball. Everything the verifier trusts comes from this file, from
 # `ocx.lock` and from `.github/workflows/`, which is why CODEOWNERS covers
 # all three.
 #
-# The tag is a timestamped dev build (`<version>-dev_<UTC timestamp>`). To move
-# it, change the tag, run `ocx lock` and commit `ocx.lock` in the same change.
+# Pin a stable release: dev builds are pruned from the registry and break the
+# install. To move the pin, change the tag, run `ocx lock` and commit `ocx.lock`
+# in the same change.
 [tools]
-grim = "dev.ocx.sh/grimoire/cli:0.15.0-dev_20260929033644"
+grim = "ocx.sh/grimoire/cli:0.15.1"

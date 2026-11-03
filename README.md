@@ -152,21 +152,22 @@ the review surface. A compromised upstream
 artifact is out of scope: review shrinks the exposure window and is not a control
 against it.
 
-## Pinning a dev build
+## Pinning grim
 
-`ocx.toml` binds `grim` to a dev build published at `dev.ocx.sh/grimoire/cli`,
-currently `0.15.0-dev_20260929033644`, and `ocx.lock` pins its digest. To move
-to a newer build, change the tag, lock it, and commit both files in one change:
+`ocx.toml` binds `grim` to a stable release published at `ocx.sh/grimoire/cli`,
+currently `0.15.1`, and `ocx.lock` pins its digest. Dev builds are pruned from
+the registry, so do not pin one. To move to a newer release, change the tag,
+lock it, and commit both files in one change:
 
 ```sh
-# ocx.toml: grim = "dev.ocx.sh/grimoire/cli:<version>-dev_<UTC timestamp>"
+# ocx.toml: grim = "ocx.sh/grimoire/cli:<version>"
 ocx lock
 ```
 
 ## The one step that differs from the documented workflow
 
 The hosting guide installs grim from a release archive and checks a literal
-`sha256`. This repository consumes a dev build, so it installs through
+`sha256`. This repository pins grim in `ocx.toml`, so it installs through
 `ocx-sh/setup-ocx` in project mode, which pulls the version `ocx.lock` pins.
 Everything else in `marketplace.yml` and `verify.yml` is the documented
 workflow.
