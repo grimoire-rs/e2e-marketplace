@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "grim-essentials",
-  "version": "0.0.0+7a57b914867b",
+  "version": "0.0.0+5fff05cfd6dc",
   "description": "Grimoire first-party skills: the grim CLI, AI-config authoring, and grim artifact authoring",
   "extensions": {
     "com.openai": {
