@@ -7,7 +7,7 @@ update loop and the two files it maintains.
 Contents: [The Loop](#the-loop) · [The Two Files](#the-two-files) ·
 [Declaring](#declaring) · [Installing](#installing) ·
 [Updating](#updating) · [Inspecting](#inspecting) ·
-[Removing](#removing) · [Bundles](#bundles)
+[Removing](#removing) · [Bundles](#bundles) · [Hooks](#hooks)
 
 Flags shown here track the release this package ships beside; confirm with
 `grim <cmd> --help` before relying on one.
@@ -37,9 +37,9 @@ forward and `grim status` to see where you stand.
 canonical way to set a default registry via a `default = true` entry, or
 `grim config registry use <alias>`), an `[options]` table for other defaults
 (`clients`, `[options.tui]` for the interactive browser), and `[skills]` /
-`[rules]` / `[agents]` / `[bundles]` tables mapping a binding name to a
-reference. Manage settings and registries with `grim config` rather
-than by hand — see [registries.md](registries.md#managing-config); it never
+`[rules]` / `[agents]` / `[mcp]` / `[hooks]` / `[bundles]` tables mapping a
+binding name to a reference (`[hooks]` takes registry references only).
+Manage settings and registries with `grim config` rather than by hand — see [registries.md](registries.md#managing-config); it never
 touches the declaration tables, which stay under `grim add` / `grim remove`.
 You may still edit by hand (run `grim lock` afterwards), but note that any
 grim write strips comments and the `#:schema` directive.
@@ -63,10 +63,14 @@ grim add --kind bundle ghcr.io/acme/python-stack:1
 grim add --no-install ghcr.io/acme/code-review:1   # declare + lock only
 ```
 
-- `--kind` (skill, rule, agent, bundle, mcp) is normally inferred from the
-  artifact's kind metadata set at release time (the `com.grimoire.kind`
+- `--kind` (skill, rule, agent, bundle, mcp, hook) is normally inferred from
+  the artifact's kind metadata set at release time (the `com.grimoire.kind`
   annotation; legacy `artifactType` on older artifacts). If grim cannot
   infer it (a non-Grimoire image), `add` errors and asks for `--kind`.
+  `hook` is **appended** to that value list, never inserted — the accepted
+  set is a frozen CLI surface, so widening it is the only permitted
+  direction. A hook may be added with the experimental flag off: declaring
+  and locking are not arming (see [Hooks](#hooks)).
 - `--name` defaults to the reference's last path segment. Re-adding a
   declared name from the *same* repository at another tag or digest
   re-pins it — config, lock and installed files all move to the new
@@ -104,6 +108,10 @@ digest, then installed the same way:
 grim add ./skills/my-skill
 grim add --kind agent ../shared/reviewer.md
 ```
+
+A **hook** has no path form: the config parser refuses a path value under
+`[hooks]`, and there is no dev-install for the kind — a hook always comes
+from a registry reference. See [Hooks](#hooks).
 
 The kind infers from the path's shape the same way `grim build` does (a
 directory with `SKILL.md` is a skill, a bare `.md` is a rule; pass
@@ -235,15 +243,22 @@ pruned — see [Installing](#installing).
 only through that flag: it rolls a declared plugin's own lockfile forward
 — the same re-resolution as above, scoped to a `marketplace.toml` — and
 **installs nothing**. It exists to keep a plugin you shipped with `grim
-export plugin` (see [publish.md](publish.md#export)) pinned to fresh
-digests between exports, without touching your own project's
+export plugin` or `grim export marketplace` (see
+[publish.md](publish.md#export)) pinned to fresh digests between exports,
+without touching your own project's
 `grimoire.toml`/`grimoire.lock` at all. Confirm the exact selector
 grammar and flags with `grim update --help`.
 
 ## Inspecting
 
 `grim status` reports each declared artifact's state: `installed`,
-`outdated`, `modified`, `missing`, or `stale`. See [artifact
+`outdated`, `modified`, `missing`, or `stale`. A hook row adds three more:
+`gated` (feature flag off, or consent missing or drifted), `not-armed` (a
+host-level refusal such as `insecure-transport`, a relative or nested
+`GRIM_HOME`, a client unverified on Windows, or a surface grim cannot register) and
+`untrusted` (client-side trust still pending); the reason is in the
+always-present `arming[].cause` array, see
+[troubleshooting.md](troubleshooting.md#a-hook-that-never-fires). See [artifact
 states][artifact-states] for what each one means. The
 `Source` column shows provenance: `direct`, the bundle the artifact came
 from, `path: <path>` for a declared local path source, or
@@ -312,15 +327,19 @@ When scripting against it, treat `update_available: null` as "could not
 determine", never as "up to date": it is `null` (not `false`) for a row
 with no lock pin (dev-install, path source, path-sourced bundle), or a row
 whose own re-resolution failed. And even under
-`checked == true`, one registry's catalog refresh failing degrades just
-that registry's rows' `deprecated`/`replaced_by` to `null` — partial
-data, not a failed check. Confirm the current flag set with
-`grim status --help`.
+`checked == true`, one registry's catalog refresh failing falls back to
+its cached catalog, and with none cached degrades just that registry's rows'
+`deprecated`/`replaced_by` to `null` — partial data, not a failed check. A
+source still in backoff after earlier failures counts as failing the same way:
+grim makes no request to it and uses its cache. Confirm the current flag set
+with `grim status --help`.
 
 Multi-item reports (`status`, `install`, `lock`, `update`, `search`,
 `config list`, `config registry list`, `config registry fields`, `publish`)
 wrap their rows in a uniform `{"items": [...]}` envelope under
 `--format json` — read the array from `items`, never the top level.
+`search` also carries the siblings `sources`, `total` and `truncated`;
+check them before treating a short `items` as the whole catalog.
 Failures under `--format json`
 emit a structured `{"error": {code, exit, message}}` document on stdout;
 some failures add a machine-readable `reason` (e.g. `stale-lock` when a
@@ -339,7 +358,10 @@ Two read-only companions:
   `registries` entry carries an `authenticated` boolean: whether the
   docker-compatible credential store holds an entry for that registry's
   host (a file-only probe — it never invokes a credential helper, so a
-  global `credsStore` alone reads as `false`).
+  global `credsStore` alone reads as `false`). Each entry also carries
+  `catalog`, that source's sync state read from the sidecar without a
+  request (`null` when no sidecar is readable), so a script can tell a stale
+  or backing-off source from a healthy one.
 - `grim fetch <ref> [--vendor …] [--path …]` prints an artifact's
   content without installing (use != install). Plain output is the raw
   payload (pipe-able: `grim fetch skills/x > SKILL.md`); `--format json`
@@ -363,7 +385,9 @@ Two read-only companions:
   tag listing it already fetches, at zero extra network cost. Curated
   fields include `deprecated` (the notice, or null) and `replaced_by`
   (the successor reference, or null); `tags[]` hides grim-internal
-  companion tags. `--format json` is a single object with every field
+  companion tags. `compression` is `"none"`, `"gzip"` or `null` (a layer
+  this grim cannot read); an older grim omits the key, so treat absent as
+  unknown. `--format json` is a single object with every field
   always present; plain output is a flat key/value table.
   Confirm with `grim describe --help`.
 
@@ -400,6 +424,13 @@ always-present arrays, `[]` on a healthy run:
 Both come from the containment guard — see
 [troubleshooting.md](troubleshooting.md#containment-refusals).
 
+**Hooks are the exception to "left on disk".** `grim remove hook <name>` drops
+only the declaration and the lock entry: the dispatch row and the client
+registration **keep firing** until the next `grim install` (which converges and
+disarms) or `grim uninstall hook <name>` (which removes the dispatch row, the
+client registration **and** the payload). grim warns that the hook stays armed.
+To stop a hook now, use `uninstall` ([remove and uninstall][hooks-remove]).
+
 ## Bundles
 
 A bundle is a curated set of members. Declare it once and it **expands**
@@ -431,6 +462,180 @@ a manifest digest. Its members must still be registry references: `grim
 lock` rejects a relative (`./`/`../`) member id, since a local bundle has
 no registry identity of its own to resolve one against.
 
+A bundle's member tables are `[skills]`, `[rules]`, `[agents]`, `[mcp]` and
+`[hooks]`; the `[mcp]` key is the name the server registers under in each
+client's MCP config.
+
+A bundle-provided **hook** is declared, never armed: it locks with the
+bundle as its provenance and its own digest-pinned source, then faces the
+same gates a directly declared hook faces — the feature flag, then this
+workspace's consent. `grim add <bundle>` records the members that gesture
+resolves to, so a bundle that later gains a hook member drifts and re-asks
+rather than arming silently. Removing the bundle removes the hook, unless
+you also declared it directly.
+
+## Hooks
+
+A **hook** is an artifact that registers with a client's lifecycle so a
+handler runs at a defined moment — before a tool call, after one, at session
+start, or when the agent's turn stops. It is the only kind that causes code
+to execute, and grim treats it accordingly. It is workflow automation, not a
+policy control. A gatekeeper handler that fails or times out is withheld
+(the launcher exits non-zero), an observer's gives no opinion, and an
+unknown workspace or an event no hook matches exits 0. A failure in grim itself
+exits non-zero, and the client's own policy for a failing hook decides, because
+grim never masks it. For enforcement, use the client's managed settings.
+
+**It is experimental and off by default.** Arming is **two gates**, and the
+second can be satisfied three ways — deliberately answered in separate places
+rather than folded into one switch:
+
+| Gate | Question | Where | Default |
+|---|---|---|---|
+| 1 | Is the feature on? | `options.experimental.hooks` in project or global config | `false` |
+| 2 | Has this workspace consented? | a machine-local record under `$GRIM_HOME/hooks/consent/` | absent |
+| 2 | …or did this one invocation get an explicit pass? | `--trust-hooks` on `grim install` / `update` / `add` | off |
+| 2 | …or did you answer the prompt? | asked once per workspace, on a TTY only | — |
+
+The second gate does not ask *whose code is this* — the lock's digest pin
+already answers that. It asks **may this checkout arm hooks on this machine at
+all**, which a pin cannot answer. Cloning a repository is not vouching for it,
+so a `grimoire.toml` that arrives with a clone declares hooks and arms nothing
+until you say otherwise, in that workspace, by hand.
+
+`--trust-hooks` and `--no-trust-hooks` are a pair — the same question the
+record answers per workspace, asked for one invocation instead. Both are
+**never persisted**, neither writes a record, when both are given the later
+one wins, and neither turns the feature on: gate 1 must already be open.
+
+**The pair beats the record in both directions**, including a workspace you
+deliberately revoked. A flag you typed on this run is the most recent and most
+specific answer there is. It is a **flag only: there is no `GRIM_ALLOW_HOOKS`,
+no `GRIM_HOOK_CONSENT`, and no environment form of the record's path**, and
+that absence is what makes the ordering safe. The environment is repo-carried
+— `.envrc`, `.mise.toml` and a devcontainer's `containerEnv` are ordinary
+files in a repository — so an environment form would let a cloned repository
+consent on your behalf. A file cannot type a flag.
+
+The feature flag is **config-only** — no environment variable overrides it:
+
+```sh
+grim config get options.experimental.hooks          # prints nothing, exit 1, unless set true
+grim config set options.experimental.hooks true     # opt in, per scope
+```
+
+Enabling the feature is not consent to run any particular hook. Consent is one
+JSON file per workspace, naming the checkout by absolute path and listing the
+hooks it covers as `<binding>@<registry>/<repository>` — no tag and no digest:
+
+```sh
+grim hook allow          # consent to what this workspace declares
+grim install             # consent is read at convergence — this is what arms
+grim hook revoke         # remove the record; the next install disarms
+grim hook deny           # the same command, under direnv's name for it
+```
+
+Three things write a record and nothing else does: `grim hook allow`,
+`grim add` (typing a reference is the declaration gesture, and adding a bundle
+records its resolved hook members), and a prompt you accepted. `grim install`,
+`update`, `lock`, `status`, `context`, `hook list`, the TUI and the MCP server
+never write one — that is the whole point of the gate.
+
+Because the record lists no tag, a **version bump** of a hook you already
+consented to does not re-ask; the bump is visible in the lock's `git diff`.
+Declaring a **new** hook, binding one under a new name, or pulling one from a
+new repository is drift: arming stops with cause `consent-drifted` and the
+message names the new entry. `grim hook allow` again widens the record.
+
+**Global scope is always consented and carries no record** —
+`$GRIM_HOME/grimoire.toml` is your own file on your own machine, so
+`grim hook allow --global` is a usage error (exit `64`), not a write.
+
+One condition answers to no file at all: a hook whose pinned registry host is
+not loopback and is reached over plain HTTP never arms (`insecure-transport`),
+because the first resolution that produces the digest pin is itself
+attacker-influenceable on the wire. Loopback is exempt, and only
+`--trust-hooks` overrides it.
+
+Setting `options.experimental.hooks` back to `false` and running `grim install`
+removes every registration and dispatch row at that scope (state returns to
+`gated`, cause `feature-flag-off`) but **keeps** the payload, the launcher
+`$GRIM_HOME/hooks/grim-hook` and the workspace consent record. Flipping the
+flag back on re-arms with no new `grim hook allow`
+([flag off][hooks-flag-off]).
+
+**Team adoption gotcha:** a grim older than 0.15 refuses to load a
+`grimoire.lock` (and config) that declares a hook and exits **78**
+(`deny_unknown_fields`; it never silently drops the entry). Every machine and
+CI job sharing the project must be on 0.15.0 or later before a hook is
+declared. Dropping the only hook declaration and re-locking makes the lock
+readable to older builds again. The `grim hook` verbs and JSON, the dispatch
+table shape, `--trust-hooks` and the `[hooks]` tables are Unstable until 1.0;
+the OCI wire format for `hook.toml` `schema = 1` is frozen
+([stability][stability-unstable]).
+
+### What you get today
+
+Declaring and locking a hook work with the flag off, and that is
+intentional — declaring is not arming, so refusing the declaration would
+make the flag mean something it does not:
+
+```sh
+grim add ghcr.io/acme/hooks/shell-guard:1     # declares under [hooks], pins the lock
+```
+
+`grimoire.toml` grows a `[hooks]` table and `grimoire.lock` a `[[hook]]`
+section, alongside the other kinds. **`[hooks]` takes registry references
+only** — a path value is refused, and there is no dev-install for the kind,
+because a working-tree source would put something armable inside a
+repository.
+
+Only **Claude**, **Codex**, **Copilot**, and **Qoder** name a hook surface
+at all, and only Claude at *project* scope — Codex's and Copilot's
+registration files are tracked repository files, and Qoder is global-only
+by policy, so grim writes all three at global scope only. Qoder also
+declines the `mutator` tier outright, at every scope: its hook schema has
+no rewrite field. Copilot's own dialect is probe-selected at build time —
+`updatedInput` is the field grim currently emits for a Copilot mutator; a
+future probe run may pick a different one, so branch on `grim hook list`'s
+report, never on the field name. Codex's and Copilot's own, pre-existing
+hook files (`~/.codex/hooks.json`, `hooks/grim.json`) are never overwritten
+or deleted by grim: if the bytes on disk are not the ones grim last wrote,
+the client reports `surface-user-owned` and nothing about that file
+changes. Every other client declines hooks and records nothing. Qoder's
+registration is unverified: no Qoder hook has been seen firing from a grim
+registration yet. Hooks arm on Linux and macOS; on Windows they arm for Claude
+only, and every other client reports `not-armed` with cause
+`platform-unsupported`.
+
+### `grim hook list`
+
+The report command for hooks. One row per declared entry, or per
+`(entry, client)` where clients differ:
+
+```
+$ grim hook list
+Hook  Tier  Events  Client  State  Detail
+
+$ grim hook list --format json
+{
+  "items": []
+}
+```
+
+An empty table is the normal answer on a project that declares no hooks —
+`Hook` is `<artifact>/<id>`, the `State` token comes from the same
+vocabulary `grim status` uses, and the JSON `items` objects carry a nested
+`arming` array so a consumer asking "which clients withheld this hook" does
+not have to re-group rows.
+
+**The launcher is not a command you type.** Clients run
+`$GRIM_HOME/hooks/grim-hook <client> <event> <root>`, a small native program
+`grim install` writes. It reads the dispatch table beside it, resolves no
+scope and needs no `grim` binary. `grim hook list` reports its `launcher`
+(`path`, `sha256`, `state`). After upgrading grim, re-run `grim install` in
+each workspace that uses hooks.
+
 ## Further Reading
 
 - [Quickstart][quickstart] — the same loop as a guided walk.
@@ -446,3 +651,6 @@ no registry identity of its own to resolve one against.
 [config-toml]: https://grimoire.rs/configuration.html
 [json-interface]: https://grimoire.rs/json-interface.html
 [artifact-states]: https://grimoire.rs/commands.html#artifact-states
+[hooks-remove]: https://grimoire.rs/hooks.html#remove-stays-armed
+[hooks-flag-off]: https://grimoire.rs/hooks.html#flag-off-retention
+[stability-unstable]: https://grimoire.rs/stability.html#unstable

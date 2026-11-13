@@ -10,13 +10,13 @@
     {
       "name": "grim-essentials",
       "source": "./claude/grim-essentials",
-      "version": "0.0.0+b51e80fc02c8",
+      "version": "0.0.0+e891a5364da7",
       "description": "Grimoire first-party skills: the grim CLI, AI-config authoring, and grim artifact authoring"
     },
     {
       "name": "hex",
       "source": "./claude/hex",
-      "version": "0.0.0+b13e0ef6a95a",
+      "version": "0.0.0+a747914046de",
       "description": "Tiered multi-agent swarm orchestration: plan, execute, review, architect"
     }
   ]
