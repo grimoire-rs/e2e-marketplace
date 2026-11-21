@@ -46,6 +46,11 @@ Environment variables that matter here (full table:
 | `GRIM_HOME` | Data root: cache, catalog, global config (default `~/.grimoire`) |
 | `GRIM_DEFAULT_REGISTRY` | Default registry for short references |
 | `GRIM_OFFLINE` | Same as `--offline` |
+| `GRIM_LOCKED` | Same as `--locked`: a command that writes `grimoire.lock` or `marketplace.lock` refuses an out-of-sync lock (65, or 79 when no lock exists) instead of repairing it |
+| `GRIM_TELEMETRY` | Opt in to anonymous usage telemetry to the OTLP collector named by `OTEL_EXPORTER_OTLP_ENDPOINT` or a `GRIM_CONFIG` file (off by default, no default endpoint; `DO_NOT_TRACK`, `OTEL_SDK_DISABLED` and offline disarm it; unstable until 1.0). Procedure: [telemetry.md](telemetry.md) |
+| `GRIM_TELEMETRY_REPOSITORY` | When telemetry is armed, add the redacted project `origin` remote as `vcs.*` |
+| `GRIM_CONFIG` | Absolute TOML files whose `[telemetry]` table can arm telemetry and name its collector. Procedure: [telemetry.md](telemetry.md) |
+| `GRIM_TELEMETRY_OTLP_HEADERS` | Auth header for a collector named by a `GRIM_CONFIG` file. Procedure: [telemetry.md](telemetry.md) |
 | `GRIM_INSECURE_REGISTRIES` | Comma-separated plain-HTTP registries, for a host no `[[registries]]` entry declares — adds to the `insecure` field, never overrides it |
 | `DOCKER_CONFIG` | Directory of the Docker-compatible credential `config.json` |
 
@@ -153,8 +158,8 @@ Two transports, chosen by the locator's shape:
 
 | Locator shape | Transport |
 |---|---|
-| `http://…`, `https://…` | Static files — fetches `<base>/all.json` |
-| `git+…`, `ssh://…`, `git@…`, or ending in `.git` | Git — shallow-clones and walks `index/**/metadata.json` |
+| `http://…`, `https://…` | Static files — reads the index root `<base>/c/root.json` and the blob it names, else `<base>/all.json` |
+| `git+…`, `ssh://…`, `git@…`, or ending in `.git` | Git — shallow-clones (hardened, see below) and walks `index/**/metadata.json` |
 
 ```toml
 [[registries]]
@@ -178,16 +183,89 @@ scaffolds an index repository — pointer tree, site config, and CI that
 builds the catalog site and gates contributions — served from GitHub or
 GitLab Pages. A plain git repository holding `index/**/metadata.json`
 also works as-is, with no build step. Full walkthrough:
-[Host Your Own Index][hosting].
+[Host Your Own Index][hosting]. An operator who wants the whole path (the
+contribution gate, branding, sync layout, ratings, a private index) should use
+the `grim-authoring` skill's index-hosting reference and the [hosting
+page][hosting]; [Publish a skill to your own index][own-index-tutorial] is the end-to-end
+walkthrough (author, publish, stand up, announce, install). This skill stays
+the consumer view. The same repository can also hold `marketplace.toml` and
+`marketplace.lock` beside the package pointers and deploy an export to a
+sibling marketplace repository, so a platform team's index can serve plugins
+too ([department index][mk-department]; see [marketplaces.md](marketplaces.md)).
 
 `oci` and `index` set together on one entry is a config error (exit 78);
 a locator that matches neither transport shape is a data error (exit 65).
 Both transports share the regular catalog cache (`$GRIM_HOME/catalog/`,
 1-hour TTL, `--refresh`, offline degradation) and browse exactly like an
 `oci` entry — search, TUI, and MCP treat index and registry sources
-alike. `grim publish --announce` is the write side: it publishes
-pointers into an index repository rather than reading them — see
+alike. Neither is windowed to a fixed row count: an index lists every entry
+and an `oci` source every repository. An index is bounded instead, in entry
+count and decoded size, and an oversized one fails its fetch rather than
+truncating. A refresh that fails serves the cached listing. The static
+transport decodes a gzip response for the index data files, and nothing is
+required of the host. Limits and timeouts:
+[Consuming an Index][package-index-consuming].
+`grim publish --announce` is the write side: it publishes pointers into an
+index repository rather than reading them — see
 [references/publish.md](publish.md#announce).
+
+**How a static index refresh works.** Nothing here needs configuring, and the
+exact limits live on the docs page, not in this skill.
+
+- **Root first.** Each refresh asks the index for its root, `c/root.json`, with
+  one small plain request derived from the locator. A locator naming some other
+  `.json` file, or carrying a query or fragment, is never probed. A valid root
+  names the catalog by digest, and a catalog already held is not downloaded
+  again. A `404`, a root with `flat: null`, or any answer that is not a valid
+  root sends grim to `all.json`. Once a root has been adopted, a transport
+  failure fails the refresh and serves the cache instead of trying `all.json`.
+- **Blobs.** When the root names a changed flat blob
+  (`c/f/sha256/<digest>.json.gz`), grim downloads it, inflates it itself and
+  verifies its SHA-256 and size before parsing. A missing or bad blob falls
+  back to `all.json` for that refresh. A host or CDN that already decoded the
+  gzip in transit is fine.
+- **Ratings.** An index with a root advertises a stats blob. grim fetches it
+  once per advertised digest, with no timer. A missing or bad blob leaves the
+  ratings grim has. `--refresh` (and `grim rate` on an unrated row) forces the
+  fetch, and an `all.json`-only index still has `stats.json` fetched on every
+  refresh.
+- **The sync sidecar.** `$GRIM_HOME/catalog/<hash>.sync.json` sits beside each
+  cache file and is private to grim: digests, the adopted root's generation,
+  check time and backoff state, never a URL. If an older grim rewrote the
+  cache, or the file is deleted, the next refresh simply syncs from scratch.
+- **Backoff.** A failed refresh serves the cache and starts a wait that grows
+  with each consecutive failure up to a cap, honouring `Retry-After`. While it
+  runs grim makes no request to that source. `grim search` reports
+  `sources[].ok: false` with an `error` containing
+  `refresh deferred until <timestamp>` plus the redacted last error. `--refresh`
+  bypasses the wait, and `--offline` never makes a request.
+- **The git clone is hardened.** A git index is cloned with `--depth 1
+  --no-local`. Only the `file`, `http`, `https`, `ssh` and `git` protocols are
+  allowed (an `ext::` URL fails), terminal and askpass prompts are off, and a
+  stalled clone is killed at the refresh deadline. A private repository
+  therefore needs an ambient credential helper or ssh agent, and credentials
+  never appear in an error.
+
+**Consumer-visible effects of the 0.15 sync layout.** An index that publishes
+only `c/` (`legacy: false`) cannot be read by a grim older than 0.15: that
+consumer sees refresh failures and should upgrade. An operator rollback reaches
+a consumer on its next refresh (`grim search --refresh` forces one); grim does
+not compare generations. `grim context` reports a per-source fallback counter
+in the sync sidecar, which counts times an index answered the root probe with
+something that was not a root, a diagnostic for a misconfigured host. Limits
+and timings stay on the docs page ([consuming an index][package-index-consuming]).
+
+**Self-hosted GitLab.** The [self-hosted GitLab walkthrough][gitlab-setup] is
+the corporate-instance path. Facts a GitLab user trips on: the git transport is
+the private-instance path and carries **no ratings** (every row reads unrated,
+by design); grim binaries reach runners through a release mirror, and `latest`
+does not resolve through a mirror, so pin an exact version; the index validate
+job needs a masked `GRIM_INDEX_BOT_TOKEN` with `api` scope, because the job
+token cannot merge MRs or read members; publishing projects on the same
+instance announce with only `repository` and `namespace` set; a Pages site on a
+separate domain needs `providers.rating_host` so voting targets the forge host.
+The variable tables (`GRIM_INDEX_MIN_ACCESS_LEVEL`, `GRIM_INDEX_REGISTRY_AUTH`,
+`GRIM_RATINGS_TOKEN`) are on that page.
 
 ### Plain HTTP {#plain-http}
 
@@ -214,6 +292,14 @@ plain HTTP, so it never disarms the opt-in.
 It does not widen where a credential may go: a registry reached over HTTPS
 must keep the credential on HTTPS, so a `Bearer realm="http://…"` challenge
 from it is refused regardless of what any entry declared.
+
+A stored credential is also withheld from a host that only the project's
+`grimoire.toml` marks `insecure = true`: a cloned repository could otherwise
+point grim's credential at a plain-HTTP host. grim sends it only where
+`GRIM_INSECURE_REGISTRIES` or your global config also declares the host. The
+pull runs anonymously with one stderr warning per host, and a registry that
+needs the credential then fails with exit 80. Details:
+[Plain-HTTP registries](https://grimoire.rs/configuration.html#plain-http-registries).
 
 Two things to say out loud when recommending it. `grimoire.toml` is
 normally committed, so the downgrade applies to every collaborator and CI
@@ -367,12 +453,14 @@ else:
   trigger would cry wolf on every correct config forever. An
   **exclude-only** filter that empties a source stays silent too: that is
   intent, not a mistake.
-- **The filter narrows the view, never the listing.** Each source's browse
-  window is built and capped at **500 repositories** first; the patterns run
-  afterwards. A narrow filter can never widen what grim looked at — on a
-  registry big enough to hit the cap, narrow the `oci` locator instead
-  (`ghcr.io/acme/platform`, not `ghcr.io`). Never tell a user a filter will
-  surface packages a plain browse missed.
+- **The filter narrows the view, never the listing.** Each source's listing
+  is built first; the patterns run afterwards. An `index` source lists every
+  entry and an `oci` source every repository its `_catalog` returns, so a
+  filter reaches every row of either. While an `oci` build is still running
+  (or was interrupted) the listing is incomplete and the source reads
+  `capped: true`; a filter cannot change that. Narrowing the `oci` locator
+  (`ghcr.io/acme/platform`, not `ghcr.io`) reads less of the registry in the
+  first place.
 
 ### Writing filters {#writing-filters}
 
@@ -413,10 +501,10 @@ grim config unset registry.acme.include            # dotted-key route
 ```
 
 Both are silent at every list length — including an already-empty list, which
-exits `0` and leaves the rest of the entry untouched — and both write the
-emptied list as **no key at all**, indistinguishable from an entry that was
-never filtered. The file itself is still rewritten by the lossy serializer
-(below); "unchanged" is about the entry, not the bytes. `--clear-include` conflicts with `--include` on the same call
+exits `0` and leaves the rest of the entry untouched — and both remove the
+list's key, so the entry reads exactly like one that was never filtered (an
+already-empty `include = []` is left as written). Nothing else in the file
+moves (below). `--clear-include` conflicts with `--include` on the same call
 (`64`); a `set` naming no field at all is also `64`. The two differ only in
 their JSON report: the flag route is `action: "registry-set"` with a
 `{"field":"include","action":"cleared"}` element in `fields`, the dotted-key
@@ -424,7 +512,7 @@ route is `action: "unset"` with `fields: []`.
 
 `registry set`'s write report carries an always-present `fields` array — one
 element per field the call wrote, in the frozen `oci, index, default,
-include, exclude, insecure` order, each `{"field":…,"action":"set","value":…}` or
+include, exclude, insecure` order (append-only — positions never move), each `{"field":…,"action":"set","value":…}` or
 `{"field":…,"action":"cleared"}` (a cleared element has no `value` key).
 Every other write verb reports `fields: []`. It describes the write, not a
 diff: a field named with the value it already held still emits its element,
@@ -466,8 +554,8 @@ config`, so you rarely hand-edit the file. It covers **settings**
 registries** (`[[registries]]`) —
 but **not declarations** (`[skills]` / `[rules]` / `[agents]` / `[mcp]` /
 `[bundles]`),
-which stay under `grim add` / `grim remove` because those must re-resolve the
-lock on every change.
+which stay under `grim add` / `grim remove` because those keep the lock in
+step with every change.
 
 - **Settings** use dotted keys — `grim config get|set|unset <key>` and
   `grim config list`:
@@ -476,11 +564,11 @@ lock on every change.
   grim config set   options.clients claude,opencode
   grim config set   options.tui.default_view tree
   grim config set   options.show_deprecated true   # show deprecated artifacts by default
-  grim config set   options.vendors.cursor.shared_skills true  # per-client: install this client's skills into the shared .agents/skills pool
+  grim config set   options.vendors.cursor.shared_skills true  # per-client: always install this client's skills into the shared .agents/skills pool (false = always native; unset = auto)
   grim config set   options.clients claude,opencode --dry-run  # validate + report, write nothing
   grim config get   options.clients          # bare value on one line; exit 1 if unset
   grim config list                           # every explicitly-set key in this scope
-  grim config list --all                     # every supported key, incl. unset — JSON carries type/title/description/default metadata for tooling, plus a constraints object for list keys with a shape rule beyond closed-set membership
+  grim config list --all                     # every supported key, incl. unset — JSON carries type/title/description/default metadata for tooling, plus a constraints object for list keys with a shape rule beyond closed-set membership, and section/advanced for settings-UI grouping
   ```
 
   `set` accepts `--dry-run`: it validates the key and value and reports
@@ -521,10 +609,9 @@ scripts cleanly (`$(grim config get options.clients)`), exiting `1` when the
 key is valid but unset. Add `--format json` to any subcommand for
 machine-readable output.
 
-**Every grim write is lossy**: comments are stripped from `grimoire.toml` on
-any `grim config` / `grim add` / `grim remove`, and so is any key whose value
-collapses to the default. The one exception is a **leading `#:schema` editor
-directive, which every rewrite preserves** at the top of the file. The full dotted-key list, JSON shapes, and exit codes live in the
+**Every grim write edits `grimoire.toml` in place**: `grim config` / `grim add` /
+`grim remove` move only the lines whose meaning changed. Comments, blank lines
+and key order survive, and a new entry is appended at the end of its table. The full dotted-key list, JSON shapes, and exit codes live in the
 [command reference][config-cmd] — never memorize them; confirm with `grim
 config --help`.
 
@@ -587,12 +674,23 @@ authoritative.
 `grim install` and `grim update` choose targets by precedence:
 
 1. `--client <list>` flag (comma-separated: `--client claude,copilot`)
-2. config `[options].clients` (TOML array of client names)
+2. config `[options].clients` (TOML array of client names; in a project,
+   the project's own list)
 3. auto-detection — every client whose marker exists for the active
-   scope (e.g. a `.claude/` directory in the project)
-4. the generic `agents` client when nothing is detected — one copy into
-   the cross-vendor `.agents/skills` pool that several clients already
-   read, instead of a copy into every vendor directory grim knows about
+   scope (e.g. a `.claude/` directory in the project), **plus**, at
+   project scope, the clients in the global `[options].clients`
+4. the generic `agents` client when nothing is detected and no global list
+   is set — one copy into the cross-vendor `.agents/skills` pool that
+   several clients already read, instead of a copy into every vendor
+   directory grim knows about
+
+`grim install` prints `clients: <name> (<source>), …` on stderr to say
+which clients it chose and why (`--client`, `project`, `detected`,
+`global`, `fallback`), except under `--progress json` or `none`, and
+`grim status` prints it as a note. The global list is read each run, so
+`grim update` never reaps a client under the union. A global config that
+does not load is warned about and read as an empty list. A project that
+names its own clients does not read the list at all.
 
 `agents` renders **skills only**; it has no vendor-neutral surface for
 rules, agents, or MCP servers. So if nothing is detected and your lock
@@ -608,12 +706,22 @@ at the moment you create the file. Pin `[options].clients` when you want
 deterministic targets in CI — set it with `grim config set options.clients
 claude,opencode` (see [Managing Config](#managing-config)).
 
+Several clients (Cursor, Copilot, OpenCode, Warp, Droid, Kilo, Cline) also
+read that shared `.agents/skills` pool. When one of them is targeted
+together with a client that writes the pool (Codex, Gemini, Zed, Amp,
+Goose, or one set to `shared_skills = true`), its skills go to the pool
+too, so each skill exists once on disk. On its own it keeps its native
+directory. `grim install` moves an existing native copy for you and keeps
+one you edited. `options.vendors.<name>.shared_skills` pins the choice:
+`true` always uses the pool, `false` always the native directory.
+
 ## Offline Mode
 
 grim is **online by default**: every floating-tag lookup resolves fresh
-against the registry, and the result is cached write-through. A floating
-tag therefore never serves a stale pin, and there is no "cache first"
-mode to surprise you.
+against the registry, and the result is cached write-through. A lookup
+therefore never answers from a stale cache, and there is no "cache first"
+mode to surprise you. A lookup is not a refresh: a pin stays in the lock
+until `grim update` moves it.
 
 `--offline` (or `GRIM_OFFLINE`) flips to **cache-only**: all network
 access is forbidden, and an operation that would need the registry fails
@@ -621,12 +729,20 @@ with exit 81 instead of silently degrading. Use it in sealed CI or
 air-gapped networks. Warm the cache first with a normal online run:
 
 ```sh
-grim lock              # online: resolve + cache everything declared
+grim install           # online: fetch + cache everything locked
 grim install --offline # later: cache-only, no network
 ```
 
-The flag or env var are the only switches — there is no config-file
-counterpart for offline.
+`grim lock` downloads no content, so an offline run after only a lock exits
+81. A resolve is the exception to 81. An offline `grim lock`, `add` or
+`update` whose resolve needs a tag or manifest the cache lacks exits 69. Its
+message says offline mode blocked it.
+
+Two offline runs exit otherwise. `grim add` without `--kind` exits 65 on an
+uncached reference, because it cannot infer the kind.
+`grim update --marketplace` exits 81 where it needs the network, a recorded
+bundle digest the store lacks included. The flag or env var are the only
+switches — there is no config-file counterpart for offline.
 
 ## Search, TUI, and MCP {#search-tui-and-mcp}
 
@@ -652,14 +768,22 @@ list all`); `grim config set options.search_min_relevance 0` (or
 `grim config --global set options.search_min_relevance 0` outside a
 project) turns the cutoff off for good. The unqueried browse is unranked
 and lists registry by registry. A bare kind keyword
-(`skill`/`rule`/`bundle`/`agent`/`mcp`, singular or plural) filters by kind
+(`skill`/`rule`/`bundle`/`agent`/`mcp`/`hook`/`settings`, singular or plural)
+filters by kind
 instead of matching as text; an empty query lists the whole catalog.
+`--kind <KIND>` / `-k` (repeatable, comma-separated; singular kind names only,
+unknown exits 64) shows only those kinds and makes every query word text, so
+`grim search --kind skill settings` finds a skill named `vscode-settings`.
 Confirm the match fields and kind-filter keywords with `grim search --help`.
 When `[[registries]]` are configured, all of them are browsed and flattened
 into one table. The catalog is cached under `$GRIM_HOME` — pass `--refresh`
 to rebuild it from the registry, `--registry` to collapse the browse to
 exactly the registries it names (repeatable / comma-separated for several at
-once). Plain output shows the one-line summary (truncated to the terminal);
+once), and `--limit <N>` to print only N rows after ranking and
+`--sort` (a positive integer; `--limit 0` is a usage error, exit 64).
+`--offset <N>` skips the first N rows before `--limit` applies. It takes 0 or
+more; a negative or non-numeric value is a usage error, exit 64. Past the end
+it prints only the table header, warns on stderr and exits 0. Plain output shows the one-line summary (truncated to the terminal);
 piped output and `--format json` keep the full description, and JSON adds a
 `repository` URL field for tooling.
 
@@ -672,11 +796,14 @@ value verbatim, which `repo` does not carry — `repo` names the artifact's own
 registry host, and one index source serves rows from many hosts.
 
 Beside `items`, the JSON document carries a `sources` array — one
-`{alias, locator, ok, error}` object per browsed source, in declaration
-order. A source grim cannot read degrades to an empty group so the reachable
-ones still answer, and the browse still exits `0` whether one source failed
-or all of them did — `sources` is the only place in the document that says
-so. Check it before treating a short or empty `items` as the catalog:
+`{alias, locator, ok, error, capped}` object per browsed source, in declaration
+order. A source whose refresh fails (unreachable, 5xx, a body over the size
+cap, an unparsable file) serves its cached catalog when one exists, and
+degrades to an empty group when none does, so the reachable ones still
+answer. The browse exits `0` whether one source failed or all of them did,
+and `sources` is the only place in the document that says so: the failed
+source reads `ok: false` with `error` set even when its cached rows are in
+`items`. Check it before treating a short or empty `items` as the catalog:
 
 ```sh
 grim search review
@@ -688,8 +815,47 @@ grim search --format json | jq '.sources[] | select(.ok | not)'
 
 `ok: true` on a source whose rows are missing is not a contradiction: that
 source answered and had nothing, or a browse filter hid what it had. The
-same failure is still logged on stderr as `catalog for source '<x>'
-unavailable: …`.
+same failure is still logged on stderr as `catalog for source '<locator>'
+unavailable: <error>`, naming the source by its locator rather than its alias.
+When cached rows were served it ends with
+`; serving the cached catalog built <built_at>`. A failed refresh does not
+restamp the cache, so the next command retries only once the cache has
+expired, and an index or registry source that keeps failing is also held back
+by a backoff: until it ends, `grim search` makes no request and reports
+`ok: false` with an `error` that contains `refresh deferred until <timestamp>`
+and the last failure. Pass `--refresh` to retry at once. A still-fresh cache is
+served with `ok: true`.
+
+Two more siblings of `items` are always present. `total` counts every
+matching row (after the browse filter, deprecated visibility, the query and
+the relevance cutoff) before `--offset` and `--limit` cut the list, and
+`truncated` is `true` when `items` is not the complete answer. That happens
+when `--offset` or `--limit` removed rows, or when a source's listing is
+incomplete and `total` is only a lower bound. `items.length < total` means the
+page is partial, and an incomplete listing may apply as well. Branch on
+`truncated` before treating `items` as the whole answer. `truncated` is also
+true on every page past the first, so tell an incomplete listing from an
+ordinary page with `sources[].capped`, a boolean on every source that is
+`true` when its listing is incomplete, whatever the offset. An `oci` listing
+is incomplete while its build is still running or was interrupted (any grim
+serves the rows built so far, `--offline` too, and the next online command
+resumes), and when the `_catalog` walk could not finish. To wait for a long
+build, run `grim search --format json --limit 1` and read pages with
+`--offline` while it lives. It builds only if no other grim holds the build
+lock; otherwise it serves the checkpoint and exits at once with `capped: true`,
+so repeat it until `capped` is `false`.
+
+To read every page, loop `offset += items.length` while `offset < total`
+(and stop on an empty `items`). No field echoes the offset. Pages of any
+size concatenate to the unpaged list, because ties break deterministically.
+Add `--offline` to every call after the first so a cache refresh cannot shift
+rows between pages; the MCP tool has no such flag, so page promptly there. A plain partial page also prints `showing 101-200 of 600; next
+page: --offset 200` on stderr; JSON prints no such line. An index past the
+abuse bounds fails its fetch instead of truncating. A queried search over an
+incomplete listing warns once per source on stderr: `catalog for source
+'<name>' is incomplete: its listing has not finished, so results and the
+total are a lower bound; the next online grim search retries it`. Run the search
+again later, not with a narrower query.
 
 A registry declaring a [browse filter](#browse-filters) contributes only the
 repositories its patterns admit — to `grim search`, the TUI, and
@@ -702,7 +868,8 @@ comes back thinner than expected, there are two things to check before
 blaming the registry: the entry's `include`/`exclude` (`grim context
 --format json` reports the resolved patterns per source), and the relevance
 cutoff (`options.search_min_relevance`, default 50) — set it to `0` to rule
-it out.
+it out. In JSON, `truncated: true` says an `--offset`, a `--limit` or an incomplete
+listing cut the list.
 
 A package the publisher has marked deprecated is **hidden by default** from
 both `grim search` and the TUI — unless it is installed in the active scope
@@ -738,7 +905,9 @@ path-splitting characters are configurable via `[options.tui]` in
 `expand_levels` — how many tree levels open expanded; the `z` key folds
 between that depth and fully-expanded at runtime — and `sort` /
 `sort_order`, the order and direction the browse opens in; `--sort`
-overrides the order per run, `s`/`S` change both live. Set them with `grim
+overrides the order per run, `s`/`S` change both live — and `theme`,
+a built-in theme name (`terminal` by default);
+`--theme` overrides it per run. Set them with `grim
 config set options.tui.<key>`, see [Managing Config](#managing-config)).
 Declared local path sources and dev-installs have no registry to root
 under — they group under a top-level **Local** tree root, where install/
@@ -754,9 +923,19 @@ single-registry fallback when no `[[registries]]` is declared. When the active
 scope has no `grimoire.toml` yet it offers to create one before starting via
 popup dialogs (the registry input is pre-filled with the effective default
 registry and the accepted value is persisted as a `[[registries]]` entry with
-`default = true`; cancelling closes the TUI). Its install, update, and delete
-actions go through the same seams as `grim add`/`install`/`uninstall`. Press
-`?` inside for the full key map.
+`default = true`; cancelling closes the TUI). Press `?` inside for the full
+key map.
+
+Its install, update, and delete actions go through the same seams as
+`grim add`/`install`/`uninstall`. Install on a row that `grim lock`'s relock
+reaches at the row's repository writes nothing to `grimoire.toml`: it repairs
+the row. Update is `grim update <name>` on the binding that holds the row, and
+only a version you picked writes a line. It also prunes what that command
+prunes.
+
+A catalog row whose guessed name is bound elsewhere is refused, as `grim add`
+refuses it. So is a name another artifact brings in from another repository.
+Delete refuses the same way before it changes anything.
 
 Three row states are worth knowing before you press anything, because each
 one changes what the action keys do:
@@ -771,16 +950,59 @@ one changes what the action keys do:
   recorded — `u` included, since 0.13.0 — and the refusal opens a modal
   offering the forced retry. Answering that modal is what supplies
   `--force`; the key you pressed does not. Only a single-artifact action
-  offers it, since one answer cannot speak for several artifacts, so a batch
-  leaves its refusals in the status line instead. A retry that refuses again
-  does not re-open the dialog, so there is no confirm loop to get stuck in.
+  offers it. One answer cannot speak for several artifacts, so a batch
+  leaves its refusals in the status line instead. The dialog's first line
+  names every artifact the retry changes and the retry forces only those, so
+  nothing you were not shown changes.
+  A refusal it did not list re-opens the dialog with that artifact added. The
+  list only grows, so there is no confirm loop to get stuck in.
+
+  A dialog taller than the screen scrolls with `j`/`k` or `pgdn`/`pgup`.
+  Overwrite can be chosen only once its last line has been on screen. A
+  terminal 21 columns wide or narrower shows the dialog no text, and so does a
+  dialog whose text wraps to more than 65,535 lines. Overwrite cannot be chosen
+  there, and the key hint reads `widen terminal` or `enlarge terminal`. A key
+  pressed before the dialog opened is dropped. The width count measures U+FF9E
+  and U+FF9F as one column each, as drawn.
+
+  An Install's dialog lists only refusals `grim add --force` covers: the
+  artifact, or a bundle's members, nested bundles' included, but not a member
+  you also declared directly. It never lists a dependency, so a refused
+  dependency opens no dialog. The status line names it instead. An Update's
+  dialog lists what `grim update --force <name>` covers, its dependencies
+  included. It also names each edited artifact the new lock dropped, for the
+  retry to remove.
+- **A settings row** (experimental) can read `gated`, `not-armed` or
+  `stale`. On a single-artifact action a refused settings value opens the
+  Overwrite dialog, which names every refused package and up to six refused
+  values. With no dialog open, the changes and refusals show in a Settings
+  panel whose only button is Close. The panel names `grim install --force`,
+  which overwrites what it marks overwrite. The status line reads `refused
+  (settings set or changed outside grim)`.
+- **A refused settings delete** names `grim uninstall --force settings
+  <name>` in that panel, which removes the values. When a bundle or another
+  artifact still holds the refused package, or a bundle member's changed MCP
+  entry, `grim uninstall` keeps it. A single-artifact delete then checks
+  everything first and opens a dialog with nothing removed, listing every
+  refusal at once. Its
+  Uninstall button repeats the delete and forces only the packages and MCP
+  servers it names, and Cancel removes nothing. In a batch, the panel says to
+  delete that row on its own.
+
+  That dialog scrolls the same way, and Uninstall can be chosen only once its
+  last line has been on screen. On a terminal 21 columns wide or narrower it
+  shows no text, and so does a dialog whose text wraps to more than 65,535
+  lines. Uninstall cannot be chosen there.
+- **`d` removes dependencies** only the deleted artifact needed, exactly as
+  `grim uninstall` does. One another artifact still needs is kept.
 - **The batch confirmation** guards `i`/`u`/`d` on more than one artifact —
   a marked set, or a group selected in tree view. It opens a prompt naming
   the count and the source before anything runs, then lists the first few
   artifact names. Cancel is preselected and there is no `y` shortcut:
   `→`/`←` or `h`/`l` switch between Cancel and the action button, `enter`
-  confirms only on the action button, and any other key cancels and keeps
-  the marks.
+  confirms only on the action button, and `↑`/`↓`, `j`/`k` or `pgup`/`pgdn`
+  scroll a prompt taller than the screen. A terminal narrower than the buttons
+  offers no action. Any other key cancels and keeps the marks.
 - **A bundle row folds in its members' health.** Declaration is the gate — a
   bundle absent from `[bundles]` reads `not installed` whatever its members
   look like — but past it the row shows the *worst* member state, at the
@@ -795,8 +1017,8 @@ and can call these tools:
 
 | Tool | What it returns | Gate |
 |------|-----------------|------|
-| `grim_search` | Same JSON as `grim search --format json`, over the resolved scope's registries (no registry override). Args: `query?`, `refresh?`, scope | always |
-| `grim_status` | Same JSON as `grim status --format json` for the requested scope. Optional `check` forwards to the same live catalog re-check as CLI `--check` (deprecated/replaced_by/update_available; the report's `checked` field says whether it ran). Args: `check?`, scope | always |
+| `grim_search` | Same JSON as `grim search --format json`, over the resolved scope's registries (no registry override), `total` and `truncated` included. Args: `query?`, `kind?` (a list of kinds, as `--kind`), `refresh?`, `limit?` (positive integer, as `--limit`), `offset?` (non-negative integer, as `--offset`), scope | always |
+| `grim_status` | Same JSON as `grim status --format json` for the requested scope. Optional `check` forwards to the same live catalog re-check as CLI `--check` (deprecated/replaced_by/update_available/moved_nested_bundles, covering bundle members and dependencies too; the report's `checked` field says whether it ran). Under `--allow-writes` it also records the install records it proves (store only). Args: `check?`, scope | always |
 | `grim_fetch` | An artifact's content in the tool result — no install. Canonical bytes, or a `vendor` (claude/opencode/copilot) projection, or one support file via `path` (binary → base64 with `encoding: "base64"`); a `files` listing is always included. `description` fetches the repository's description companion instead (every member inline); `digest_only` resolves `{ref, digest}` with no download and composes with `description`. Content caps at 256 KiB (marked truncation); needs network. Args: `ref`, `vendor?`, `path?`, `description?`, `digest_only?`, scope | always |
 | `grim_describe` | Same JSON as `grim describe --format json` — manifest-level metadata (kind, curated annotations, tags, `has_description`) without downloading content. Args: `ref`, scope | always |
 | `grim_render` | Writes an artifact's vendor-native files into `dest_dir` (created if absent) — no install state. Args: `ref`, `vendor`, `dest_dir`, scope | `--allow-writes` |
@@ -806,7 +1028,7 @@ The install scope is chosen **per tool call**: optional `global` /
 all omitted = project walk-up from the server's working directory).
 `grim mcp` takes no scope flags — `--global`/`--config` at launch exit 64.
 The server is read-only by default; `--allow-writes` (the only flag)
-enables `grim_render` — leave it off for a browse-only server.
+enables `grim_render` and lets `grim_status` write the install records it proves. Leave it off for a browse-only server.
 Diagnostics go to stderr; stdout is the JSON-RPC channel. Register it
 in a project `.mcp.json`:
 
@@ -829,9 +1051,9 @@ Confirm current flags with `grim mcp --help`.
 ## Ratings and Voting {#ratings}
 
 Some indexes publish community ratings — a `stats.json` sidecar served
-beside `all.json`, tallied from upvotes on the index operator's own forge
-threads. There is no Grimoire service holding them; the forge *is* the
-database. When the browsed index publishes them, `grim search --format
+beside `all.json` (or a stats blob the index root advertises), tallied from
+upvotes on the index operator's own forge threads. There is no Grimoire
+service holding them; the forge *is* the database. When the browsed index publishes them, `grim search --format
 json` carries a `rating` object per row (`{up, url}`, or `null` when
 unrated), the TUI detail pane gains a `Rating:` row, and `--sort rating`
 orders the browse by upvotes.
@@ -933,7 +1155,11 @@ rate][rate] and [Artifact Ratings][ratings-doc].
 [registry-compat]: https://grimoire.rs/configuration.html#registry-compatibility
 [browse-filters]: https://grimoire.rs/configuration.html#browse-filters
 [package-index]: https://grimoire.rs/package-index.html
+[package-index-consuming]: https://grimoire.rs/package-index.html#consuming
 [hosting]: https://grimoire.rs/hosting-an-index.html
+[own-index-tutorial]: https://grimoire.rs/tutorials/own-index.html
+[mk-department]: https://grimoire.rs/guides/hosting-a-marketplace.html#department
+[gitlab-setup]: https://grimoire.rs/self-hosted-gitlab.html
 [index-repo]: https://github.com/grimoire-rs/index
 [config-cmd]: https://grimoire.rs/commands.html#config
 [search]: https://grimoire.rs/commands.html#search

@@ -5,9 +5,14 @@ the exit code, diagnose the cause, or get past an integrity gate.
 
 Contents: [Exit Codes](#exit-codes) · [Exit 65](#exit-65-data-errors) ·
 [Exit 78](#exit-78-no-client-can-host-it) ·
+[Rule Support Directory Warning](#a-rule-that-ships-a-support-directory) ·
+[Held-Back Request](#a-held-back-request) ·
 [Integrity Gates](#integrity-gates) ·
 [Containment Refusals](#containment-refusals) ·
 [Kind Inference](#the-kind-inference-gotcha) ·
+[A Hook That Never Fires](#a-hook-that-never-fires) ·
+[Settings That Never Apply](#settings-that-never-apply) ·
+[Marketplace and Plugin Export](#marketplace-and-plugin-export) ·
 [Offline Failures](#offline-failures) · [Auth Failures](#auth-failures)
 
 ## Exit Codes
@@ -21,13 +26,13 @@ no stderr parsing needed:
 | 0 | Success | — |
 | 1 | Failure | unclassified fall-through |
 | 64 | Usage error | bad invocation; `grim init` when the config already exists; invalid `grim fetch` flag combinations; a release/publish tag colliding with the reserved `__grimoire` namespace; a dotted config key naming a client that does not exist (`options.vendors.<typo>.shared_skills` is an *unknown key*, not a bad value) |
-| 65 | Data error | validation failures of any kind — see below |
-| 69 | Unavailable | registry unreachable, resolve timeout |
+| 65 | Data error | validation failures of any kind — see below; a dependency graph over the resolve's work or tag-listing budget |
+| 69 | Unavailable | registry unreachable, resolve timeout; an offline `grim lock`, `add --kind <kind>` or `update` whose resolve needs a tag or manifest the cache lacks (offline, `add` without `--kind` exits 65 and `update --marketplace` exits 81) |
 | 74 | I/O error | filesystem read/write failure (non-permission) |
-| 75 | Temporary failure | another grim process holds the lock; credential-helper timeout — retry |
+| 75 | Temporary failure | another grim process holds the lock; Cline's own lock on its MCP settings file; a settings file changed during the run, left untouched; credential-helper timeout — retry |
 | 77 | No permission | permission denied anywhere in the chain |
-| 78 | Config error | malformed `grimoire.toml`/lock, no registry for `grim login`/`logout`, bundle conflict, unsupported client, credential helper missing; **no client can host what you are installing** (see below); a hand-authored `options.vendors.<name>.shared_skills = true` on a client that does not read the shared pool |
-| 79 | Not found | tag/manifest/blob 404, no config discovered, lock missing; a missing description companion on `grim fetch --description` |
+| 78 | Config error | malformed `grimoire.toml`/lock, no registry for `grim login`/`logout`, bundle conflict, a dependency version-claim conflict (two majors of one artifact), a major downgrade a claim would force (`--allow-downgrade`), a claim from a version the resolve dropped, a recorded claim the pin no longer answers, a settings conflict across packages (never forceable), `grim build` of a settings document without `--kind settings`, unsupported client, credential helper missing; **no client can host what you are installing** (see below); a hand-authored `options.vendors.<name>.shared_skills = true` on a client that does not read the shared pool |
+| 79 | Not found | tag/manifest/blob 404, no release satisfies a dependency's version claim, no config discovered, lock missing; a kept pin whose manifest the registry dropped (run the `grim update -- <name>` the message names); a missing description companion on `grim fetch --description` |
 | 80 | Auth error | registry authentication failed |
 | 81 | Offline blocked | `--offline`/`GRIM_OFFLINE` blocked a network operation (deliberate policy, distinct from 69) — includes `fetch`/`describe` against an uncached reference, which is 81, not 79 |
 
@@ -41,23 +46,61 @@ an unrelated failure and still exits non-zero.
 Under `--format json`, a failure emits a `{"error": {code, exit,
 message}}` document on stdout; some failures add a machine-readable
 `reason` field: `stale-lock` (exit 65 — a partial `grim update <name>`
-was refused; retry with a full `grim update`), `modified` (exit 65 — an
-install refused a locally modified artifact; retry with `--force`),
+was refused; retry with `grim lock`, then the update; if `grim lock` finds a pinned manifest gone, bare `grim update` moves every pin), `modified` (exit 65 — an
+install refused a locally modified artifact, or a settings value changed
+after grim wrote it; retry with `--force`),
 `untracked-destination` (exit 65 — an install refused to clobber an
-unrecorded pre-existing destination; retry with `--force`),
-`anchor-escape` (exit 65 — a recorded install path resolved outside its
+unrecorded pre-existing destination, or a settings value grim never wrote;
+retry with `--force`),
+`major-downgrade` (exit 78 — a dependency's range claim would move a pin to a
+lower major; not forceable, not retryable; rerun `grim add`, `grim lock` or
+`grim update` with `--allow-downgrade`, or declare the artifact with a tag),
+`unsupported-layer-media-type` (exit 65 — a skill, rule, agent or hook layer
+has a `+zstd` media type this grim cannot decode; not forceable, not
+retryable, upgrade grim),
+`unsupported-artifact-feature` (exit 65 — an artifact declares a feature
+this grim does not know, or has a layer layout it cannot read; not
+retryable, upgrade grim), `anchor-escape` (exit 65 — a recorded install path resolved outside its
 anchor root; **never** fixable with `--force`, see [Containment
 Refusals](#containment-refusals)), `no-config`
 (exit 79 — a project-scope command found no `grimoire.toml` walking up
-from the working directory), and `locked` (exit 75 — another grim
-process holds the config-file lock). New reasons are additive — treat an
+from the working directory), `no-lock` (exit 79 — `grim install` found
+no `grimoire.lock`; run `grim lock`), and `locked` (exit 75 — another grim
+process holds the config-file lock, another process holds Cline's own lock on
+its MCP settings file, or a settings file changed during the run). New reasons are additive — treat an
 unknown one as absent.
 
 `grim install` has its own stale-lock refusal, and it is a different
 case from the `stale-lock` reason above. If `grimoire.lock`'s
 `declaration_hash` no longer matches `grimoire.toml`, install exits 65
-with no `reason` field at all. Run `grim lock` to refresh it. The
-`stale-lock` reason above fires only on a partial `grim update <name>`.
+with no `reason` field at all. Run `grim lock` to bring it in line, which
+keeps existing pins. The
+`stale-lock` reason above fires on a partial `grim update <name>`, and also
+when a lock's recorded dependencies no longer match the pinned artifacts
+(typically written by a grim older than 0.16.0): run `grim lock`.
+
+Under `--locked` (or `GRIM_LOCKED=1`), every command that writes a lock gives
+the `stale-lock` reason (exit 65) when `grimoire.lock` no longer matches
+`grimoire.toml`, and exit 79 with reason `no-lock` when there is no lock. Fix:
+run a plain `grim lock` without the flag or variable, then the command again.
+For a marketplace the same reason means a declared plugin's part is stale or
+missing: run `grim update --marketplace <manifest>` without the flag. The
+command's own edit still updates the lock, so `grim add x --locked` on a lock
+in line works.
+
+After `grim remove --no-relock` of a key whose declaration hid an edge at another
+version, the lock is stale until `grim lock`, which keeps that key's pin. `grim update`
+exits 78 if the edges truly disagree. Restoring `grimoire.toml` by hand does not
+make such a lock fresh, because the edit wrote a hash no declaration produces
+when it changed the lock's rows. An edit that changes no row keeps the hash.
+
+An unreadable `grimoire.lock` (conflict markers, bad TOML, a lock path that
+links to a file that is not a lock) makes `grim lock`, `add`, `update`, `install` and `status`
+exit 78. Restore the file from git or resolve the conflict; deleting it moves
+every pin.
+`grim lock` keeps existing pins and `grim update` is the command that moves a
+pin whose request held, so a tag that moved upstream shows only in
+`grim status --check` (`update_available`).
 
 A failure that names a key or value grim does not recognize also carries a
 `hint` string (and prints the same line on stderr): grim's formats reject
@@ -73,7 +116,8 @@ re-run with `--force` resolves the refusal (today `modified` and
 `untracked-destination`). **Key on `forceable`, never on the exit code**:
 exit 65 covers both those forceable refusals and the non-forceable
 `anchor-escape`, so an exit-code check would offer an override that cannot
-work. Full list: the [JSON interface][json-interface] docs page.
+work. A refused settings run also carries a `pieces` array naming every
+refused value. Full list: the [JSON interface][json-interface] docs page.
 
 ## Exit 65: Data Errors
 
@@ -88,6 +132,21 @@ Common causes, roughly in order of frequency:
   frontmatter fence; missing `name` or `description`; frontmatter
   `name` not equal to the directory name; description empty or over
   1024 chars.
+- **A rule's support directory (since 0.16.0).** `a rule can no longer ship a
+  support directory`: `rules/<name>/` holds a file other than `README.md`,
+  `logo.png`, `logo.svg`. Raised by `grim build`, `release`, `publish`, and by
+  `grim lock`, `update`, `add <path>`, `install <path>` for a rule declared by
+  path. Move the files into a skill, require it from the rule's frontmatter
+  (`grim.requires.skills.<name>`), name it in the rule body. A `.grimignore`
+  there is itself a stray file. `grim status` on an already-locked path rule
+  that gained such a file exits 0, reports it `outdated` and prints the
+  refusal as a warning. Link: `https://grimoire.rs/upgrading.html#rule-support-dir`.
+- **An agent's stray files (since 0.16.0).** `an agent's directory may hold only
+  README.md, logo.png and logo.svg`: `agents/<name>/` holds anything else.
+  Delete the files or move them out; run-time files belong in a skill the
+  agent requires. The three allowed files are no longer packed either
+  (`grim fetch <ref> --path <name>/README.md` now exits 1). Link:
+  `https://grimoire.rs/upgrading.html#agent-companions`.
 - **Agent frontmatter.** Agents *require* frontmatter with `name`
   (== file stem) and `description`.
 - **Catalog metadata.** `keywords` written as a list instead of a
@@ -95,9 +154,34 @@ Common causes, roughly in order of frequency:
 - **Vendor metadata.** A known `<vendor>.<field>` key with a bad
   literal (e.g. a non-`"true"/"false"` boolean, a value outside a
   closed enum set).
+- **Hook manifest.** `hook.toml` is a strict document, so its refusals are
+  all 65: a handler whose first token names a payload file (the one to
+  learn — a registry-delivered payload has no exec bit, so name an
+  interpreter: `argv = ["sh", "${GRIM_HOOK_DIR}/guard.sh"]`), an entry with
+  both or neither of `argv`/`command`, `mutator` outside `PreToolUse`,
+  `gatekeeper` on an event no client can block at, a regex or an
+  over-256-byte value in `matcher`, an override table named for something
+  that is not a client, catalog keys like `summary` at top level, a
+  duplicate `id`, a `name` that is not the directory stem, an artifact named
+  `bin` or `dispatch.json`, or an unknown `schema`. Reproductions for each:
+  the `grim-authoring` skill's `references/hook-spec.md`.
+- **Settings document.** `grim build --kind settings` refuses a table for a
+  harness that takes no settings, a value of the wrong type or outside its
+  field's list, and a bare dotted key: TOML reads `chat.disableWrap` as a
+  `chat` table, so quote it (`"chat.disableWrap" = true` under `[kiro]`). It
+  also refuses an OpenCode or Kilo key or value holding `{env:` or `{file:`,
+  and a Gemini value holding `$NAME` or `${NAME}`, since the harness would
+  expand it. Every message: [Settings][settings-ref].
 - **Release tag errors.** Reference with no tag; invalid version
   string; exact-version tag already exists at a different digest
-  (re-release with `--force` only if you mean to rewrite it).
+  (re-release with `--force` only if you mean to rewrite it). Equal
+  content under a different digest is not an error for a skill, rule,
+  agent or hook: grim adopts the existing manifest, see [Compressing
+  layers][compression]. Bundle and MCP releases still refuse.
+- **Gzip or zstd layer refusals.** A layer that decodes past its size cap,
+  is not a single clean gzip member, or fails its
+  `com.grimoire.uncompressed.digest` check exits 65. A `+zstd` layer
+  exits 65 with reason `unsupported-layer-media-type`.
 - **Shared-pool opt-in on a non-reader.** `grim config set
   options.vendors.<name>.shared_skills true` for a client that does not
   read the cross-vendor `.agents/skills` pool is refused here (a
@@ -109,7 +193,10 @@ Common causes, roughly in order of frequency:
 - **Oversize blob.** A registry serving more bytes than its manifest
   declared for a layer aborts the download mid-transfer rather than
   buffering an unbounded body. Reachable from `grim fetch` (also gated by
-  an 8 MiB pre-download check on the declared size) and from
+  a 32 MiB pre-download check on the declared size; since 0.15 the same
+  limit also bounds the **decoded** content of a gzip layer, so a small
+  compressed layer that expands past it exits 65 — layer encoding rules:
+  [artifacts][layers]) and from
   `grim install`/`grim update` (no separate flag — any locked artifact's
   download can hit this on a lying descriptor).
 - **Git provenance unavailable.** Building or releasing with `--git`
@@ -126,11 +213,11 @@ trying `grim release` again.
 
 A confusing 78 with an intact `grimoire.toml` usually means grim resolved
 a client set that cannot host the kinds you asked for. It happens when
-**nothing is detected**: grim then targets the generic `agents` client —
-one copy into the shared `.agents/skills` pool — and `agents` renders
-**skills only**. A lock holding nothing but rules, agents, or MCP servers
-has nowhere to go, so `grim install` (and `grim add` of such an artifact)
-exits 78 naming both ways to pick a client.
+**nothing is detected** and no global list is set: grim then targets the
+generic `agents` client — one copy into the shared `.agents/skills` pool — and `agents` renders
+**skills only**. A lock holding nothing but rules, agents, MCP servers, or
+hooks has nowhere to go, so `grim install` (and `grim add` of such an
+artifact) exits 78 naming both ways to pick a client.
 
 ```sh
 grim install --client claude            # one run
@@ -148,6 +235,35 @@ read the shared pool: refused at config *load*, so every command in that
 scope fails until it is removed. The same value through `grim config set`
 is refused earlier, at 65. Only a verified pool reader may be opted in —
 grim never writes where nothing reads.
+
+## A Lock That Now Records Dependencies
+
+A warning that `grimoire.lock now records dependencies, which grim 0.15.1 and
+older cannot read` prints once, the first time a write adds `requires` rows to
+a lock that had none. The exit is 0. Every machine and CI job that uses the
+project needs grim 0.16.0 or newer.
+
+## A Rule That Ships a Support Directory
+
+An install warning `rule '<name>' ships a support directory, which is
+deprecated` means the package was published before grim 0.16.0. The exit is 0
+and the rule works. Its directory files load as extra rules in some clients.
+Ask the publisher of the named repository to move them into a required skill.
+It prints once per such rule, only when grim writes files, not on a no-op
+install.
+
+## A Held-Back Request
+
+A warning that `skill/x is requested by skill/p as <ref>, but your declaration
+holds it at <pin>` is not an error: the declaration's pin won and the exit is
+0. Run `grim update -- x` to re-read the declared tag, or declare the
+requested reference. A declaration pinned by digest gets only the second
+remedy. A declaration with no tag is not held back: it yields to the range
+claims on its own repository and stderr names them; declare a tag to choose
+one. A pin a claim would move to a lower major refuses with exit 78 and
+`major-downgrade`: declare the artifact with a tag, or rerun with
+`--allow-downgrade`. `grim status --check` lists the requests still held back, a declared
+bundle's included.
 
 ## When grim Declines, It Stays Declined
 
@@ -169,7 +285,15 @@ grim never silently overwrites or deletes work you did locally:
 - `grim update` re-materializes through that same gate: a locally modified
   artifact is **refused** with exit 65 instead of being overwritten, and
   `--force` overwrites it. An unmodified artifact still rolls forward with
-  no flag, so ordinary updates are unaffected.
+  no flag, so ordinary updates are unaffected. A named `grim update <names>`
+  applies the gate only inside the closure of its names, so an edit outside
+  it neither fails the run nor gets overwritten. Its `--force` reaches that
+  closure and what the run prunes.
+- A render that a pull or checkout left behind is not an edit. `grim install`
+  and `grim status` prove it against the locked pin and re-pin the record, so
+  the install exits 0 where 0.15.1 exited 65. A CRLF checkout and a link on a
+  parent directory are not proven and still refuse. `grim update` keeps and
+  names a file it cannot prove, `--force` included.
 - `grim install` also **refuses** to overwrite a destination it has no
   record of (a hand-authored same-named skill dir, rule file, or MCP
   config entry) — `--force` overwrites and records it. Identical
@@ -181,9 +305,21 @@ grim never silently overwrites or deletes work you did locally:
   re-declare, so nothing else changes).
 - `grim update` prunes artifacts that dropped out of the lock, but a
   locally modified orphan is **kept** and reported as `kept-modified`;
-  `--force` prunes it anyway.
+  `--force` prunes it anyway. After a named run
+  `grim uninstall --force <kind> <name>` removes it. A bare
+  `grim update --force` does too but moves every pin. An install record the lock
+  no longer holds stays on disk after a named run, and a warning names it and
+  `grim uninstall <kind> <name>`: exit 0. A bare `grim update` prunes it too but
+  moves every pin. Each command carries the run's `--global` or `--config`. A
+  row with action `restored` kept its pin, and this run wrote its files. That
+  includes a client's first copy and a pool reader joining the shared pool.
+- A **settings** value (experimental) that changed after grim wrote it, or
+  one grim never wrote, is refused the same way (65, `forceable`, a
+  `pieces` array). `--force` replaces it, and grim keeps no backup of the
+  value it replaces. Two packages that want different values for one key
+  exit 78, and no `--force` overrides that conflict.
 
-`grim status` shows which artifacts are `locally modified`. If a managed
+`grim status` shows which artifacts are `modified`. If a managed
 file needs permanent local changes, copy it out of the managed location
 instead of fighting the gate — managed files are owned by the lock.
 
@@ -214,26 +350,241 @@ Only the final-component escape above is refused.
 
 Kind is inferred from shape — and agents break the pattern:
 
-- At `build`/`release`: a directory packs as a skill, `.md` as a rule,
-  `.toml` as a bundle. A bare `.md` is **always a rule** by shape — an
+- At `build`/`release`: a directory packs as a skill *unless* it carries a
+  `hook.toml`, `.md` as a rule, `.toml` as a bundle. A bare `.md` is
+  **always a rule** by shape — an
   agent requires `--kind agent` explicitly. Forgetting it is not an
   error: the file silently publishes as a rule (grim warns when a rule
   carries both `name` and `description` — heed that warning). Likewise a
   `.toml` is **always a bundle** by shape — an MCP server descriptor
   requires `--kind mcp` (grim errors with a `--kind mcp` hint when the
-  TOML carries a `[server]` table).
+  TOML carries a `[server]` table), and a settings document requires
+  `--kind settings` (without it, `grim build` exits 78).
+- **A directory carrying `hook.toml` is a hook, and that arm is checked
+  before the skill arm.** So the two directory kinds never need a flag —
+  but a stray `hook.toml` dropped into a *skill* tree silently
+  reclassifies it. Read the `Kind` column `grim build` prints; that is the
+  cheap check.
 - At `add`: kind is read from the published manifest's kind metadata
   (the `com.grimoire.kind` annotation; legacy `artifactType` on older
   artifacts). A non-Grimoire image cannot be inferred — `add` errors
-  and asks for `--kind`.
+  and asks for `--kind` (`skill`, `rule`, `agent`, `bundle`, `mcp`,
+  `hook`, or `settings`).
+
+## A Hook That Never Fires
+
+**This is expected, not a fault.** Hooks are experimental and **off by
+default**, so a declared, locked, installed hook that does nothing is grim
+working as designed. Nothing here is a bug to chase:
+
+```sh
+grim hook list                                    # what is declared, and its state
+grim config get options.experimental.hooks        # exit 1 = off (see below); prints true = on
+ls "$GRIM_HOME/hooks/consent/"                    # one file per consented workspace
+```
+
+**The machine contract.** `grim install` rows carry `armed` (null for a
+non-hook, an array of `{client, tier}` for a hook). `grim status` and
+`grim hook list` rows carry an always-present `arming` array of
+`{client, cause, message, transient}`; an empty array means armed everywhere.
+A settings row carries the same array, see
+[Settings That Never Apply](#settings-that-never-apply).
+**Branch on `cause`, never on `message`.** `cause` is a closed kebab-case set
+documented at [json-interface][hook-arming] (it includes `feature-flag-off`,
+`workspace-not-consented`, `consent-drifted`, `insecure-transport`,
+`surface-user-owned`, `platform-unsupported`, `not-registered` and
+`dispatch-lock-held`, the only `transient: true` one); link it rather than
+copy it. The `state` tokens besides the common ones are `gated`, `not-armed`
+and `untrusted`. A `GRIM_HOME` that is relative, or nested inside the
+workspace, makes grim **refuse to arm** (not merely warn); fix it with an
+absolute `GRIM_HOME` outside the repository.
+
+Work through it in this order:
+
+1. **The feature flag.** `options.experimental.hooks` is `false` unless
+   someone set it, and it is **config-only** — there is no environment
+   variable, so exporting something will not turn it on. Set it per scope:
+   `grim config set options.experimental.hooks true`, plus `--global` for a
+   global hook (the project flag does not cover a global run).
+
+   The flag is written only when `true`, so `config set … false` *removes the
+   key*: `config get` can never print `false` for it, and **exit 1 is what
+   "off" looks like**.
+2. **This workspace's consent.** A separate question from the flag, and one
+   no config file answers. Consent is a machine-local record under
+   `$GRIM_HOME/hooks/consent/`, one file per workspace, and only three
+   things write one: `grim hook allow`, `grim add`, and a prompt you
+   accepted. `grim install` deliberately does not — which is why a hook that
+   arrived with a `git clone` reports `workspace-not-consented` however many
+   times you re-run install. `grim hook allow` is the fix, and also for an
+   offline bundle member your local store does not list, because `add` records
+   consent only for what that run resolved. A failed `grim add` needs no
+   `hook allow`: it records its consent ahead of the install.
+
+   A record you *do* have can still be out of date. Declaring a new hook,
+   binding one under a new name, or pulling one from a new repository is
+   **drift**: arming stops and the cause reads `consent-drifted`, with the
+   message naming the entry that is new. Re-run `grim hook allow` to widen
+   the record. A version bump of a hook you already consented to is
+   deliberately not drift and never re-asks.
+
+   Two more causes live next to these. `insecure-transport` means the pinned
+   registry host is not loopback and is reached over plain HTTP — no record
+   overrides that, only `--trust-workspace` (alias `--trust-hooks`) on the
+   invocation. And global scope
+   is always consented: `grim hook allow --global` exits **64** because
+   there is no record to write, not because the write failed.
+3. **The client.** Only Claude, Codex, Copilot, and Qoder name a hook
+   surface at all, and only **Claude** at project scope — Codex and Copilot
+   host hooks at global scope only because their registration files are
+   tracked repository files, and Qoder is global-only by policy. Qoder also
+   declines the `mutator` tier outright at every scope. Codex's and
+   Copilot's own, pre-existing hook files are never touched: a `hooks.json`
+   or `hooks/grim.json` whose bytes are not the ones grim last wrote reports
+   `surface-user-owned` and stays exactly as it was. Every other client
+   declines hooks, records nothing, and says so. Check with `grim context`
+   which clients actually resolved. Qoder's registration is unverified: no
+   Qoder hook has been seen firing from a grim registration yet.
+
+   Hooks arm on Linux and macOS. On Windows they arm for Claude only; once the
+   flag and consent gates are clear every other client reports `not-armed`
+   with cause `platform-unsupported` and grim registers nothing for it.
+
+   Cause `not-registered` has several sources; `grim install` prints which.
+   Besides a tier or matcher the client cannot express, grim could not write
+   somewhere. The client's settings file is unreadable or, at project scope,
+   resolves outside the workspace through a symlink. Or `$GRIM_HOME/hooks/dispatch.json`
+   is full (1 MiB) or a table this grim cannot read (newer schema,
+   unparseable, over the cap), which grim leaves untouched. Free space with
+   `grim uninstall hook`; for an unreadable table, upgrade grim or move it
+   aside. Then re-run `grim install`. One hook's own payload can cost that hook
+   alone: grim warns `hook '<name>' is not armed:` with the reason (payload
+   gone, modified, unreadable, or a `hook.toml` it cannot read or parse), and
+   the other hooks keep arming. `grim install` restores a gone payload,
+   `grim install --force` a modified one. Per-cause pages: [gated][ht-gated],
+   [global-only][ht-global], [user-owned file][ht-owned],
+   [Windows][ht-windows], [table full][ht-full],
+   [table unreadable][ht-unreadable] (the cap is 1 MiB),
+   [payload][ht-payload].
+4. **The tier and the moment.** The design refuses rather than degrades: a
+   `gatekeeper` or `mutator` a client cannot honour is *declined* for that
+   `(hook, client)` pair, never quietly downgraded to an observer, because
+   reporting a gatekeeper as installed when it only logs would be worse than
+   refusing it. So a hook that reports as declined for a tier reason is doing
+   what it should; change the tier or the client, not your expectations of
+   the other one.
+
+The causes `launcher-unwritable`, `launcher-path-occupied`,
+`launcher-path-unquotable` and `binding-name-reserved` concern the native
+launcher at `$GRIM_HOME/hooks/grim-hook`; `grim hook list` shows its state.
+Re-run `grim install` after fixing the named cause and after every grim
+upgrade.
+
+## Settings That Never Apply
+
+**Also expected, not a fault.** The settings kind is experimental and off by
+default, so a declared, locked settings package that writes nothing is grim
+working as designed. Its row on `grim status` reads `gated` or `not-armed` and
+carries the same `arming` array as a hook row; branch on `cause`.
+
+Work through it in this order:
+
+1. **The flag.** `options.experimental.settings`, config-only like the hook
+   flag; `grim config set options.experimental.settings true` (add `--global`
+   for global scope). Cause `feature-flag-off` while it is unset.
+2. **This workspace's consent**, at project scope only. The hook consent
+   record covers settings too, so the causes are the same:
+   `workspace-not-consented` and `consent-drifted`. `grim hook allow` (alias
+   `grim consent allow`) fixes both; `--trust-workspace` answers for one run.
+3. **The settings causes**, from the same [closed set][hook-arming]:
+   `no-applicable-settings` (nothing in the package applies to the selected
+   client; select one it covers), `client-config-absent` (the harness's own
+   settings file does not exist yet; start the client once), and
+   `local-file-tracked` (git tracks `.claude/settings.local.json`; run
+   `git rm --cached` on it). The last never moves `state`, and the first two
+   move it only when no selected client can take a value. At global scope
+   `settings-root-relative` (the variable placing the client's file, such as
+   `KIRO_HOME`, is relative) and `settings-root-in-workspace` (the file lies
+   inside the repository the command runs in, by its own path or a link, or
+   grim cannot place it outside) read `not-armed`, exit 0, write nothing and
+   read nothing there. Every run warns `settings left unchanged: …` once per
+   client and cause, naming the step: a relative root needs an absolute path
+   or an unset variable; an own or `..` path needs the variable pointed
+   outside the repository (without `..`) or unset, or a run from outside the
+   repository; a link needs a run from outside the repository; an unreadable
+   working directory needs a run from one you can read. A value written
+   earlier stays, with its record, and the install row reads `skipped`.
+   The report does not show a refused client: read `grim status` arming.
+4. **The client.** Only Claude, Codex, Copilot, Cursor, OpenCode, Qoder,
+   Antigravity, Amp, Droid, Gemini, Kilo, Kiro, and Warp on macOS and Linux,
+   take settings, and at project scope only Claude. `not-registered` on a
+   settings row means a path source, a settings file that leads out of
+   bounds, or a settings records file grim could not read; it reads
+   `not-armed` and exits 0.
+
+A package consent withholds reads `skipped` in the `install`, `update` or
+`add` report and warns `settings package '<name>' not applied: <reason>`,
+exit 0. With no record and no terminal, the reason ends ``run `grim consent
+allow` or pass --trust-workspace``.
+
+A run that refuses a value exits 65 instead — see [Integrity
+Gates](#integrity-gates). A settings file whose value changed during the run
+exits 75 (`locked`, retryable) and is left untouched; one that then no longer
+parses exits 65. Details: [Settings][settings-ref].
+
+## Marketplace and Plugin Export
+
+Symptom, cause, fix for `grim export marketplace` and the manifests it reads
+(needs grim 0.15.0 or later; narrative in [marketplaces.md](marketplaces.md)):
+
+- **65 `untracked-destination`:** a foreign marketplace file, or a non-empty
+  `./<client>/` that has no marketplace file of ours. The usual cause is a
+  **renamed** `[marketplace].name`. `--force` adopts it and deletes the
+  strays; consumers must re-add the marketplace under the new name.
+- **65 naming `[marketplace]`, `repository` or a client:** the table is
+  missing or invalid, `repository` is not an https URL without credentials, or
+  `clients` is empty or names `junie`, `openclaw` or `droid` (select `claude`).
+- **65 on every command after adding `[marketplace]` or plugin metadata
+  keys, on a CI box:** that machine runs grim older than 0.15.0 (unknown
+  field). Upgrade every machine and CI job first.
+- **65 "a plugin no selected client can carry":** every member was a rule or a
+  hook, or agents-only for non-Claude clients.
+- **78 on `grim update --marketplace <plugin>:<member>` (or `<bundle>`),
+  writes nothing:** the pick would keep a dependent at its pin beside another
+  version of a row or bundle it requires. Add the dependent to the pick, or
+  run the whole plugin; the text says that the whole-plugin update moves
+  every pin of the plugin whose tag moved, and offers `--allow-downgrade` where
+  that update refuses a major downgrade.
+- **75:** another export holds the manifest lock or the output-root
+  `.grim-export.lock`.
+- **CI, required `verify` check stays pending on the bot PR:** the PR was
+  opened with `GITHUB_TOKEN`, which starts no `pull_request` run. Use a GitHub
+  App, or close and reopen the PR ([tokens][mk-tokens]).
+- **CI, regenerate fails "Pull request not opened":** the organization or
+  repository forbids Actions to create pull requests; allow it at both levels,
+  or install an App.
+- **CI, `verify` fails on a PR that edits only `marketplace.toml`:** commit
+  the regenerated files in the same PR, or use the [curator
+  two-step][mk-two-step].
 
 ## Offline Failures
 
 Exit 81 means offline mode itself blocked the operation — deliberate
 policy, not an outage (that is 69). Either drop `--offline` / unset
-`GRIM_OFFLINE`, or warm the cache online first (`grim lock`, then go
-offline) — see [registries.md](registries.md). A floating tag that was
+`GRIM_OFFLINE`, or warm the cache online first (`grim install`, then go
+offline; `grim lock` downloads no content) — see
+[registries.md](registries.md). A floating tag that was
 never resolved online cannot be resolved from the cache.
+
+A resolve that offline mode blocks exits 69 instead, so read the message
+before you treat a 69 as an outage. That covers `grim lock`, `add` and
+`update` on a tag or manifest the cache lacks. The message says offline
+mode blocked a required network operation.
+
+Two offline runs exit otherwise. `grim add` without `--kind` exits 65 on an
+uncached reference, because it cannot infer the kind. Pass `--kind` there.
+`grim update --marketplace` exits 81 where it needs the network, a recorded
+bundle digest the store lacks included.
 
 ## Auth Failures
 
@@ -245,6 +596,10 @@ Exit 80 is the registry rejecting your credential. Things to know:
   request while offline: 81). A skipped verification (store-only mode,
   offline) surfaces a wrong password on the next pull or push instead.
   Re-login with a fresh token; confirm flags with `grim login --help`.
+- A stored credential is not sent to a host that only a project
+  `grimoire.toml` marks `insecure = true`. The pull runs anonymously, a stderr
+  warning names the cause, and a registry that needs a credential exits 80.
+  Declare the host in `GRIM_INSECURE_REGISTRIES` or the global config to send it.
 - Credentials are read from `$DOCKER_CONFIG/config.json` — a plain
   `docker login` works too; the store is shared.
 - A configured credential helper that is not on `PATH` is exit 78, not
@@ -268,3 +623,16 @@ Exit 80 is the registry rejecting your credential. Things to know:
 [auth]: https://grimoire.rs/authentication.html
 [config]: https://grimoire.rs/configuration.html
 [json-interface]: https://grimoire.rs/json-interface.html
+[compression]: https://grimoire.rs/publishing.html#compression
+[layers]: https://grimoire.rs/artifacts.html#layers
+[hook-arming]: https://grimoire.rs/json-interface.html#hook-arming
+[ht-gated]: https://grimoire.rs/hooks-troubleshooting.html#gated
+[ht-global]: https://grimoire.rs/hooks-troubleshooting.html#global-only
+[ht-owned]: https://grimoire.rs/hooks-troubleshooting.html#surface-user-owned
+[ht-windows]: https://grimoire.rs/hooks-troubleshooting.html#platform-unsupported
+[ht-full]: https://grimoire.rs/hooks-troubleshooting.html#dispatch-full
+[ht-unreadable]: https://grimoire.rs/hooks-troubleshooting.html#dispatch-unreadable
+[settings-ref]: https://grimoire.rs/settings.html
+[ht-payload]: https://grimoire.rs/hooks-troubleshooting.html#payload-unarmable
+[mk-tokens]: https://grimoire.rs/guides/hosting-a-marketplace.html#tokens
+[mk-two-step]: https://grimoire.rs/guides/hosting-a-marketplace.html#two-step

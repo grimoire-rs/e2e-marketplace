@@ -32,13 +32,13 @@ tables — not in any nested map:
 | `replaced-by` | Successor reference (independent of `deprecated`); surfaced in search / `grim describe`. Must parse as a reference or the release fails (exit 65) |
 
 The bundle source parser is **strict** (`deny_unknown_fields`): any key
-outside this set and the four member tables is a hard parse error.
+outside this set and the member tables is a hard parse error.
 Unlike skill/rule frontmatter, a typo'd bundle key cannot slip through.
 
 ## Member Tables
 
-Four optional tables, each mapping a **config binding name** (the name
-the member installs under when a consumer adds the bundle) to a
+Seven optional tables, each mapping a **config binding name** (the name the
+member installs under when a consumer adds the bundle) to a
 fully-qualified reference:
 
 ```toml
@@ -48,13 +48,36 @@ code-reviewer = "registry.example.com/grimoire/skills/code-reviewer:1"
 rust-style = "registry.example.com/grimoire/rules/rust-style:1"
 [agents]
 reviewer = "registry.example.com/grimoire/agents/reviewer@sha256:8f4b..."
+[hooks]
+shell-guard = "registry.example.com/grimoire/hooks/shell-guard:1"
 [mcp]
 docs-search = "registry.example.com/grimoire/mcp/docs-search:1"
+[settings]
+team-defaults = "registry.example.com/grimoire/settings/team-defaults:1"
+[bundles]
+web-stack = "registry.example.com/grimoire/bundles/web-stack:1"
 ```
 
 An `[mcp]` member is a published MCP server descriptor: it materializes no
 files, and its binding name is the key the server registers under in each
 client's MCP config.
+
+A `[hooks]` member is a **declaration only**. It lands in the consumer's
+lock with the bundle as its provenance and keeps its own digest-pinned
+source, then meets the same install-time gate a directly declared hook
+meets: the experimental feature flag first, then the consumer's workspace
+consent — asked once per workspace, never per hook.
+
+`grim add <bundle>` records the **resolved** member set ahead of its install.
+Offline it records only members the bundle manifest in the local store lists,
+and the consumer runs `grim hook allow` for the rest. So bundling a hook does
+not pre-approve one added later: a bundle that gains a hook member drifts and
+re-asks. See [hook-spec.md](hook-spec.md).
+
+A `[settings]` member (experimental) is a declaration in the same way: it
+locks with the bundle as its provenance, then meets the settings flag and,
+at project scope, the same workspace consent before any value is written.
+See [Settings][settings-ref].
 
 References are fully qualified — `registry/repo:tag` or
 `registry/repo@sha256:…` — or **deployment-relative**: a leading `./`
@@ -73,13 +96,21 @@ Relativity is explicit — a bare registry-less ref (`skills/x:0`) still
 fails validation. `.`/`..` beyond the leading run is an error, and a
 `../` chain past the registry root fails the release (exit 65). `--pin`
 resolves relative members against the release target and freezes them
-absolute. There is no `[bundles]` table — nested bundles are invalid.
+absolute. A `[bundles]` table nests another bundle.
+
+**A bundle can be a bundle member.** A `[bundles]` table lists nested bundles
+by reference, like any member table. Installing the outer bundle expands the
+inner one, and a member both hold is installed once. Grim refuses a cycle
+(exit 65) and has limits on depth and size: see
+[Dependencies][dependencies]. A bundle that nests another needs grim 0.16.0
+or later to install; an older grim exits 65 on it.
 
 ## Floating vs. Pinned
 
 By default the bundle stores members exactly as written: floating tags
-stay floating and each consumer's `grim lock` re-resolves them fresh;
-digest members (`@sha256:…`) never move. Add `--pin` at release to
+stay floating and each consumer's first `grim lock` resolves them. Their lock then
+keeps those pins until a bare `grim update` or `grim update <member>`. Digest
+members (`@sha256:…`) never move. Add `--pin` at release to
 freeze every floating member to a digest in the published bundle — it
 then always expands to the same digests, even offline; re-run the
 release to roll it forward ([pinning][pin]).
@@ -87,7 +118,7 @@ release to roll it forward ([pinning][pin]).
 ## Limits
 
 - At most **512 members** per bundle (parse-time error beyond that).
-- The members document is capped at **512 KiB**; no nesting.
+- The members document is capped at **512 KiB**.
 
 ## Publish Order
 
@@ -127,7 +158,8 @@ docs-search = "ghcr.io/acme/mcp/docs-search:1"
 | Typo'd top-level key (`sumary = …`) | Hard parse error — strict schema, build fails |
 | `keywords` as a TOML array | Hard parse error — must be one string |
 | Member ref not fully qualified | Hard error — invalid reference |
-| Nested bundle member | Invalid — no `[bundles]` table exists |
+| Nested bundle member | Valid via a `[bundles]` table; consumers need grim 0.16.0 or later |
+| An unknown member table | Hard parse error — `[skills]`, `[rules]`, `[agents]`, `[hooks]`, `[mcp]`, `[settings]` and `[bundles]` are the accepted seven |
 | More than 512 members, or members document > 512 KiB | Rejected |
 | `repository` not `https://` | Hard error, exit 65 |
 | Two declared bundles disagreeing on a member | Consumer-side `BundleConflict` at lock time (exit 78, fail-closed) — keep curated sets disjoint |
@@ -142,3 +174,5 @@ docs-search = "ghcr.io/acme/mcp/docs-search:1"
 [bundles-ref]: https://grimoire.rs/artifacts.html#bundles
 [pub-bundles]: https://grimoire.rs/publishing.html#bundles
 [pin]: https://grimoire.rs/publishing.html#pin
+[dependencies]: https://grimoire.rs/concepts.html#dependencies
+[settings-ref]: https://grimoire.rs/settings.html

@@ -1,8 +1,13 @@
 # Publishing Workflow
 
 You loaded this file because you are turning a local skill, rule, agent,
-or bundle into a published OCI artifact — the build → dry-run → release
-loop, version tagging, and registry authentication.
+MCP server, hook, settings document, or bundle into a published OCI
+artifact — the build → dry-run → release loop, version tagging, and
+registry authentication.
+(Hook-specific authoring rules live in the `grim-authoring` skill's
+`references/hook-spec.md`; everything on this page applies to a hook
+unchanged. The experimental settings document is specified on the
+[Settings][settings-ref] page.)
 
 Contents: [Build, Then Release](#build-then-release) ·
 [Cascade Tags](#cascade-tags) · [Immutability](#immutability) ·
@@ -27,22 +32,41 @@ grim release ./code-review ghcr.io/acme/code-review:1.2.3       # validate, pack
 ```
 
 `grim build <path>` detects the kind from the path — a directory packs
-as a **skill**, a `.md` file as a **rule**, a `.toml` file as a
+as a **skill**, a directory carrying a `hook.toml` as a **hook** (that arm
+is checked first), a `.md` file as a **rule**, a `.toml` file as a
 **bundle**. An **agent** always needs `--kind agent`: its `.md` shape is
 indistinguishable from a rule and grim never guesses from content. This
 is the most common publishing mistake — see
-[troubleshooting.md](troubleshooting.md).
+[troubleshooting.md](troubleshooting.md). A **settings** document
+(`settings/<name>.toml`) always needs `--kind settings` too; without it the
+`.toml` is read as a bundle and the build exits 78.
 
 `--dry-run` prints every tag the release would move and the digest each
-would point at, without touching the registry. Make it a habit before
-any version release.
+would point at, and never writes to the registry. A cascading dry run reads
+the floats it would move; when it cannot, it warns once and plans every float
+moving. Make it a habit before any version release.
 
-A skill directory or a rule support directory can drop a `.grimignore` at
+A skill or hook directory can drop a `.grimignore` at
 its root (gitignore syntax) to keep runtime junk — `__pycache__/`,
 `.venv/`, `.DS_Store` — out of the pack; a built-in default list already
 covers the common cases, so `.grimignore` is only for exceptions. See
 [Artifact Reference § .grimignore][grimignore] for the full default list
-and semantics.
+and semantics. A rule or agent directory reads no `.grimignore`; one there is
+a stray file.
+
+**A rule or agent is its `.md` alone** (grim 0.16.0 and later). The directory
+beside it (`rules/<name>/`, `agents/<name>/`) may hold only `README.md`,
+`logo.png` and `logo.svg`, none of them packed; any other file makes `grim
+build`, `release` and `publish` exit 65. A rule declared by local path is
+refused the same way by `grim lock`, `update`, `add <path>` and `install
+<path>`. The rule message starts `a rule can no longer ship a support
+directory`, lists up to five files and links
+`https://grimoire.rs/upgrading.html#rule-support-dir`; the agent message starts
+`an agent's directory may hold only README.md, logo.png and logo.svg` and links
+`#agent-companions`. Fix: move the depth files into a skill, require it from the
+rule's frontmatter (`grim.requires.skills.<name>`), and name it in the rule
+body. Keep the support skill model-invocable (see the `ai-config-authoring`
+skill's `skill-design.md`).
 
 ## Cascade Tags
 
@@ -57,13 +81,58 @@ cascade explicit: `--cascade` asserts it and rejects a non-semver tag with
 exit 65 (a typo guard); `--no-cascade` publishes only the exact tag even for
 a full semver.
 
+A cascade never moves a floating tag off a higher release. Before any tag moves,
+grim reads each float's manifest version: a float already on a higher version
+inside its own span stays, with one stderr line, so a `2.3.7` backport after
+`2.9.0` moves `2.3` and keeps `2` and `latest`. The JSON report lists them in
+`floats_kept`. Floats published earlier, or moved by other tools, stay as they
+are. A float stays only while the exact tag of its version still names its
+manifest. A float whose current version is a prerelease always moves, whatever
+the precedence, because a cascade never leaves one there. A
+cascading `--dry-run` reads the registry too and, when it cannot or offline,
+warns once and plans every float moving, exit unchanged. A real release that
+cannot read a float fails before any tag moves. Run releases into one
+repository one at a time, for example in a CI concurrency group. A release
+reads each float before it moves it, and tags have no compare-and-set. So two
+concurrent releases can leave a float on the lower version.
+
 ## Immutability
 
 An exact-version tag is immutable by default: if `1.2.3` already exists
-and points at different bytes, the release refuses (exit 65) rather than
-rewrite history. Pass `--force` only when you deliberately mean to move
-it. Floating tags (`1.2`, `1`, `latest`) move freely on every cascade —
-that is their job.
+and points at different content, the release refuses (exit 65) rather than
+rewrite history. The guard compares content, not bytes, so for a skill, rule,
+agent or hook equal content under a new manifest digest (a flipped
+`--compression`) is adopted, not refused; see [Compression](#compression).
+Pass `--force` only when you deliberately mean to move it, and note that
+`--force` never adopts. Floating tags (`1.2`, `1`, `latest`) move on a cascade unless that would
+lower them; see [Cascade Tags](#cascade-tags).
+
+## Compression
+
+`--compression gzip` on `grim release` or `grim publish` (or a top-level
+`compression` key in `publish.toml`; the flag wins) publishes a skill, rule,
+agent or hook as a gzip layer; a bare `--compression` means `gzip`. Bundles
+and MCP servers ignore it. Default is
+`none`, byte-identical to earlier releases. Consumers need grim 0.15.0 or
+later; an older grim cannot read a gzip layer and fails with exit 65 on
+`grim fetch` (verified on 0.14.3; see [upgrading][compression-upgrade]).
+The opt-in prints one stderr reminder line. Compress **new versions only**:
+re-releasing an existing skill, rule, agent or hook version with the other
+setting adopts the published manifest when content is equal (bundle and MCP
+releases still refuse), and `--force` converts it with a new digest that
+breaks locks pinning the old one. A `--dry-run` preview digest equals a real
+push's digest, except when a real run adopts the existing manifest. A gzip layer grim's own reader would refuse
+(tar over 64 MiB and over 100x its gzip size) is refused at release with exit
+65; use `--compression none`. The `release` and `publish` JSON reports carry
+an always-present `compression` (`none`/`gzip`, `null` for bundle and mcp).
+**Registry support:** a probe on 2026-10-21 showed GHCR and the GitLab
+Container Registry accept the custom layer type and keep its annotation byte
+for byte. Artifactory has **not** been probed, so do not publish compressed
+layers there until the docs say otherwise ([registry
+compatibility][registry-compat]). Reading a gzip layer needs no registry
+support. The safe rollout is skip-existing: compress from the next version and
+never `--force` an existing one. Confirm flags with
+`grim release --help`; see [Compressing layers][compression].
 
 ## Scripted Publishing
 
@@ -96,8 +165,11 @@ bundle members before the bundle that references them.
 reads a `publish.toml` manifest that declares every package with a `registry`
 and per-entry `version`, validates the whole set before any push, then
 releases each entry in a fixed kind order: skills first, then rules, then
-agents, then MCP servers, then bundles — alphabetical within each kind.
-Bundle members always land before the bundles that reference them.
+agents, then MCP servers, then hooks, then settings (experimental), then
+bundles — alphabetical within
+each kind. Bundle members always land before the bundles that reference
+them: the kind sequence is fixed so that a bundle's `mcp` and `hooks`
+members are pushed before the bundle that references them.
 
 The manifest format uses per-entry sub-tables keyed by name. A minimal
 example:
@@ -111,13 +183,22 @@ version = "1.2.0"    # explicit per-entry version wins
 
 [rules.style]         # no version → inherits 0.10.0 (or `version = "${version}"`)
 
+[hooks.shell-guard]   # conventional source path: hooks/shell-guard/ (a directory)
+
 [bundles.dev-stack]
 version = "0.3.0"
-pin = true          # bundle-only: freeze floating member tags to digests
+pin = true          # freeze floating bundle members, or an artifact's requires, to digests
 
 [skills.dev-stack-core]
 announce = false    # publish, but write no index pointer under --announce
 ```
+
+Each kind's table maps to a conventional source path under the manifest
+directory: `skills/<name>/`, `rules/<name>.md`, `agents/<name>.md`,
+`mcp/<name>.toml`, `hooks/<name>/`, `settings/<name>.toml`,
+`bundles/<name>.toml`. Override any entry's source with its own `path`. The
+`[hooks]` and `[settings]` tables are **additive** — a `publish.toml`
+written before them parses unchanged.
 
 Key behaviors — confirmed invariants, not subject to minor-release drift:
 
@@ -127,8 +208,11 @@ Key behaviors — confirmed invariants, not subject to minor-release drift:
 - **Fail-fast.** The first failing entry stops the batch. The report shows
   all completed entries plus the failed one. Re-run with `--only <name>` to
   resume from a specific entry.
-- **`pin = true` is bundle-only.** Setting it on a skill, rule, or agent
-  entry is a validation error (exit 65).
+- **`pin = true` applies to every kind.** It freezes a bundle's members or
+  another artifact's declared dependencies, and does nothing for an entry
+  with neither.
+- **Dependency order.** An entry follows the same-manifest entries it
+  requires, then the kind order. A requires cycle exits 65 before any push.
 - **Catalog-wide version.** `--version` is the single version source for a
   run. An optional top-level `version` covers every entry that omits its
   own or sets the literal `${version}`; explicit per-entry versions
@@ -205,7 +289,7 @@ everyone already on them.
 Common flags — confirm current spelling with `grim publish --help`:
 
 ```sh
-grim publish --dry-run           # plan without pushing
+grim publish --dry-run           # plan without writing (reads the floats)
 grim publish --only code-review  # publish one entry
 grim publish --version canary    # channel tag on every entry, no cascade
 grim publish --version 1.4.0 --no-cascade  # single exact tag, no floats moved
@@ -309,9 +393,11 @@ falls to manual maintainer review. Full spec: [The Package Index][package-index]
 
 ## Editor schema support {#editor-schema}
 
-`grim schema --kind config|publish|lock|mcp` prints a JSON Schema for
-`grimoire.toml`, `publish.toml`, `grimoire.lock`, or the MCP server
-descriptor (`mcp/<name>.toml`) — generated from grim's own parser, so it
+`grim schema --kind config|publish|lock|mcp|hook|settings` prints a JSON
+Schema for `grimoire.toml`, `publish.toml`, `grimoire.lock`, the MCP server
+descriptor (`mcp/<name>.toml`), the hook manifest (`hook.toml`), or a
+settings document (`settings/<name>.toml`) —
+generated from grim's own parser, so it
 accepts exactly what grim accepts. The same schemas are published to the docs site; adding a
 `#:schema` directive on the first line of a TOML file gives a supporting editor
 (Taplo, Even Better TOML) autocomplete and typo-flagging. Confirm the flags
@@ -320,9 +406,11 @@ for the hosted URLs.
 
 ## Bundles
 
-A bundle is a small `.toml` whose `[skills]` / `[rules]` / `[agents]` / `[mcp]`
-tables list members by reference — the same shape as a `grimoire.toml`.
-Build and release it like any artifact:
+A bundle is a small `.toml` whose `[skills]` / `[rules]` / `[agents]` / `[mcp]` /
+`[hooks]` / `[settings]` / `[bundles]` tables list members by reference — the
+same shape as a `grimoire.toml`. A hook or settings member is declared by the
+bundle, never armed or applied by it; consent is recorded per member. Build
+and release it like any artifact:
 
 ```sh
 grim build ./python-stack.toml
@@ -333,11 +421,18 @@ grim release ./python-stack.toml ghcr.io/acme/python-stack:1.0.0 --pin
 already-published artifacts; consumers resolve those members at lock
 time, so a member that is not on the registry yet breaks every consumer.
 
-By default member tags stay floating and each consumer's `grim lock`
-re-resolves them fresh. `--pin` instead freezes every floating member to
+By default member tags stay floating and each consumer's first `grim lock`
+resolves them. After that the consumer's lock keeps those pins until a bare
+`grim update` or `grim update <member>` moves them. `--pin` instead freezes every floating member to
 a digest at release time, making the bundle reproducible on its own —
 the stronger guarantee for air-gapped or tunneled networks. Re-run the
-pinned release to roll members forward.
+pinned release to roll members forward. `--pin` also freezes the declared
+dependencies of any other kind.
+
+An artifact that declares dependencies needs grim 0.16.0 or later to
+build, release and install: an older grim leaves the declarations out
+when packing. Put the first dependent version under a new major tag
+rather than an existing floating one.
 
 ## Catalog Metadata
 
@@ -365,7 +460,8 @@ publishes what the file says. Two invariants hold for every kind:
 
 *Where* the fields live differs by kind (skill/agent: the frontmatter
 `metadata` map; rule: top-level frontmatter; bundle and mcp: top-level
-TOML) — see [the per-kind examples][metadata].
+TOML; hook: **nowhere** — `hook.toml` is strict, so fold the blurb into its
+`description`) — see [the per-kind examples][metadata].
 
 Not editing every artifact: each field has a matching flag on `build`,
 `release`, and `publish` (`--license`, `--repository`, `--authors`,
@@ -404,6 +500,15 @@ Companion](#description-companion).
 `replaced-by` stay opt-in: publish them when they are true, never as
 boilerplate.
 
+**A hook has none of them.** `hook.toml` accepts only `schema`, `name`,
+`description`, and `[[hooks]]`, and it is strict — so `summary`,
+`keywords`, `repository`, `deprecated`, and `replaced-by` each fail the
+build with exit 65 rather than being silently dropped. `description` is a
+hook's only catalog-facing field; write it to carry the whole blurb. A
+repository-level README/logo still works via the description companion
+below. A **settings** document carries the catalog keys as top-level TOML
+keys, above its harness tables, and requires `description`.
+
 ## Description Companion {#description-companion}
 
 The in-tree README convention ([artifacts.md][artifacts-readme]) only
@@ -430,13 +535,38 @@ include   = ["docs/img/*.png"]   # extra README-referenced assets
   entry's repository. Override one entry with its own
   `[<kind>.<name>.description]` table (same schema), or opt it out with
   `description = false`. A manifest-wide `publish = false` inside the
-  top-level table disables the companion for the whole run.
+  top-level table disables the shared companion, but an entry with its own
+  table still publishes one.
 - **Convention fallback.** With no `[description]` table at all, grim
   probes the manifest directory for `README.md`, `CHANGELOG.md`, and
-  `assets/logo.png|svg` / `logo.png|svg`; any hit publishes a companion
+  `assets/logo.svg|png` / `logo.svg|png`; any hit publishes a companion
   automatically (opt out per entry with `description = false`). All
   members are optional — an explicit table that resolves to zero files is
   a data error (exit 65), but a conventional-probe miss is silent.
+- **Package README and logo.** By default each entry's own README and logo
+  replace the companion's. First hit wins, and README and logo fall back
+  independently to the top-level companion (`<path>` is the entry's source,
+  explicit `path` included):
+
+  | Kind | README | Logo |
+  |---|---|---|
+  | skill, hook (directory `P`, named `S`) | `P/README.md`, then `S.README.md` beside `P` | `P/logo.svg`, `P/logo.png`, then `S.svg`, `S.png` beside `P` |
+  | rule, agent (`D/S.md`) | `D/S/README.md`, then `D/S.README.md` | `D/S/logo.svg`, `D/S/logo.png`, then `D/S.svg`, `D/S.png` |
+  | mcp, bundle, settings (`D/S.toml`) | `D/S.README.md` | `D/S.svg`, `D/S.png` |
+
+  A file inside a skill or hook directory ships with the package; a sibling
+  beside it does not. Changelog and included files still come from the
+  top-level companion. `[description] entry_readme = false` turns the README
+  lookup off (boolean only; the logo lookup has no toggle). A file that
+  escapes the manifest directory or is not a regular file is skipped with a
+  warning. A repository with package READMEs publishes a
+  different companion on its next run, even at an unchanged version.
+- **Precedence.** Per-entry table, then top-level table, then the
+  conventional files; the package README takes the README slot of the last
+  two. A table replaces wholesale and turns the root probe off for the slots
+  it omits: a top-level table with files but no `readme`, next to a root
+  `README.md`, warns that the README is not published. An entry's `path`
+  never changes which top-level companion it gets.
 - Companion pushes ride the same `grim publish` batch, after the entry's
   own artifact push, and are idempotent — unchanged content republishes
   to the same digest. `--dry-run` previews the planned companion pushes
@@ -535,47 +665,108 @@ With no positional registry, `login`/`logout` resolve `--registry`, then
 
 Everything above pushes to an OCI registry, which is the right target
 when the consumer runs grim. `grim export plugin` covers the case where
-they do not: it packages already-published skills, agents, and MCP
-servers as a Claude Code or [Agent Plugins][agent-plugins] plugin — a
+they do not: it packages already-published artifacts as a plugin — a
 directory or `--zip` archive a teammate installs directly, no registry
-credential or grim binary needed on their end.
+credential or grim binary needed on their end. A positional ref may also be
+a local path (`./skills/code-review`), packed as `grim add` packs one, so an
+unpublished skill, rule or agent exports too; the plugin is then named after
+the packed artifact unless `--name` is given.
 
 ```sh
 grim export plugin ghcr.io/acme/skills/code-review:1 --client claude --zip -o dist
 ```
 
-A `--plugin`/`--marketplace` declared export re-resolves from a
-`marketplace.toml` and writes a `marketplace.lock` beside it — a separate
-file from `grimoire.lock`, never mixed with it. This is a rendering step,
-not a release: it carries no version-cascade, no announce, and no
-skip-existing semantics of its own. The rendered `plugin.json`
-description is the base text alone, capped at 500 characters: a
-`--description` or declared `description` over 500 exits 65, while a
-publisher's annotation text is cut to fit. Omitted members are listed in
-the plugin's generated `README.md`. A plugin logo (`--logo` or a declared
-`logo`, `.png`/`.svg` up to 1 MiB) ships as `assets/logo.<ext>`; a single-reference export without one uses
-that repository's published companion logo. `grim export plugin
---project` exports the project's own `grimoire.lock` as one plugin (name
-from `--name` or `grimoire.toml`'s `[plugin].name`, no re-resolution), and
-a `marketplace.toml` plugin can declare `project = "<dir>"` instead of
-`include` to take a project's pins. Confirm the current flag set with
+**What an export emits** depends on the client, which falls in one of two
+families. The **Claude** family (`claude`, `qoder`, `droid`, `junie`,
+`openclaw`) writes `.claude-plugin/plugin.json` (Qoder:
+`.qoder-plugin/plugin.json`). The [**Agent Plugins**][agent-plugins] family (`copilot`, `codex`,
+`cursor`, `agents`) writes `plugin.json`, and Cursor also writes
+`.cursor-plugin/plugin.json` with `${CURSOR_PLUGIN_ROOT}` for MCP paths. A
+client outside both families, or a `--client` naming one with no plugin format,
+exits 78. From 0.15.0 `--client qoder` succeeds (it exited 78 before), and a
+`qoder` entry in `[options].clients` is no longer skipped when `--client` is
+omitted.
+
+Admission is a design-level invariant, not a flag. Skills and MCP servers
+travel everywhere. **Agents travel only in the Claude family** (and `openclaw`
+drops agents and MCP as `client-declined`). **Rules and settings packages
+never travel** (`no-format-surface`). **A hook member is always declined**: an exported
+plugin runs without grim and a hook needs grim's own runtime. Declining is one
+warning per member per plugin, a line in the plugin README and an `omitted[]`
+JSON row — exit 0, never an error. If **every** member is omitted for a client,
+the export exits 65 (a hook-only plugin included). The per-client table and
+reasons: [what each client admits][export-admission].
+
+The plugin `version` is `<base>+<12 hex>`, where the hash covers the **rendered
+tree** (every file's path, exec bit and content). Editing the description or
+logo, or a grim release that renders a skill differently, moves it, and it can
+differ between clients for the same plugin. Compare for equality, never order;
+bump `--version` or the declared `version` to change the base. Only the
+grammar is frozen, not the hash inputs. Through 0.14 the suffix hashed member
+digests, so every plugin gets one new suffix on first re-export from 0.15.0
+([upgrading][plugin-version-move]).
+
+Output is `<DIR>/<plugin>.<client>` or `.zip`, and an existing output is
+refused with 65 unless `--force`. A `--plugin`/`--marketplace` declared export
+reconciles a `marketplace.toml`, keeping the pins of unchanged includes, and
+writes a `marketplace.lock` beside it
+— a separate file from `grimoire.lock`, never mixed with it. This is a
+rendering step, not a release: no version-cascade, no announce, no
+skip-existing. The rendered `plugin.json` description is the base text alone,
+capped at 500 characters: a `--description` or declared `description` over
+500 exits 65, while a publisher's annotation text is cut to fit. A plugin logo
+(`--logo` or a declared `logo`, `.png`/`.svg` up to 1 MiB) ships as
+`assets/logo.<ext>`. Optional `readme` and `changelog` plugin keys name
+Markdown files relative to the manifest (`grimoire.toml` for `[plugin]`), UTF-8,
+at most 1 MiB, else 65: `readme` replaces the generated README heading and
+`changelog` is copied to `CHANGELOG.md`. The generated README lists omitted
+members; it carries no member list. `grim export plugin --project`
+exports the project's own `grimoire.lock` as one plugin (name from `--name`
+or `grimoire.toml`'s `[plugin].name`, no re-resolution), and a
+`marketplace.toml` plugin can declare `project = "<dir>"` instead of `include`
+to take a project's pins. The metadata keys (`author`, `homepage`, `license`,
+...) and these file keys need grim 0.15.0 or later; limits are in
+[plugin metadata][plugin-metadata]. Confirm the current flag set with
 `grim export plugin --help`, and see the full walkthrough in [Hand a team
 a plugin without grim][team-plugin] and the [command
 reference][commands-export].
 
+### Serving a marketplace repository {#export-marketplace}
+
+`grim export marketplace` hands a whole audience one address instead of one
+folder: from a `marketplace.toml` carrying a `[marketplace]` table it
+regenerates a git repository holding one marketplace file per client and one
+plugin tree per plugin and client, plus a root `README.md` with each client's
+add commands. Commit the result; a consumer adds it with their own tool, no
+grim needed. A manifest carrying `[marketplace]` needs grim 0.15.0 or later on
+every machine and CI job that reads it: an older grim rejects it (exit 65).
+
+```sh
+grim export marketplace -o ../acme-marketplace
+```
+
+Running it, its flags and exit codes, the JSON report, adding the result in
+each client, pinning, and rollout live in
+[marketplaces.md](marketplaces.md). Creating and hosting one is the
+`grim-authoring` skill's marketplace reference and the [curator
+guide][hosting-a-marketplace]. See the [command
+reference][commands-export-marketplace] for the layout and ownership rules.
+
 ## Further Reading
 
-- [Publishing][publishing] — the full workflow: support directories,
-  per-kind metadata, dry runs, bundle pinning.
+- [Publishing][publishing] — the full workflow: the rule and agent package
+  contents, per-kind metadata, dry runs, bundle pinning.
 - [The Package Index][package-index] — index spec, auto-merge rules,
   hosting your own.
 - [Authentication][auth] — credential resolution, storage tiers, CI.
 - [Command reference: build, release, login, logout][commands].
 - [Command reference: export plugin][commands-export].
+- [Command reference: export marketplace][commands-export-marketplace].
 - [Publishing from CI][ci] — wiring publish/announce into GitHub or
   GitLab CI.
 
 [publishing]: https://grimoire.rs/publishing.html
+[compression]: https://grimoire.rs/publishing.html#compression
 [package-index]: https://grimoire.rs/package-index.html
 [metadata]: https://grimoire.rs/publishing.html#metadata
 [batch-publish]: https://grimoire.rs/publishing.html#batch-publish
@@ -583,8 +774,16 @@ reference][commands-export].
 [auth]: https://grimoire.rs/authentication.html
 [commands]: https://grimoire.rs/commands.html#build
 [commands-export]: https://grimoire.rs/commands.html#export-plugin
+[export-admission]: https://grimoire.rs/commands.html#export-plugin-admission
+[plugin-version-move]: https://grimoire.rs/upgrading.html#plugin-version-move
+[compression-upgrade]: https://grimoire.rs/upgrading.html#compressed-layers-need-new-grim
+[registry-compat]: https://grimoire.rs/configuration.html#registry-compatibility
+[commands-export-marketplace]: https://grimoire.rs/commands.html#export-marketplace
+[plugin-metadata]: https://grimoire.rs/configuration.html#plugin-metadata
+[hosting-a-marketplace]: https://grimoire.rs/guides/hosting-a-marketplace.html
 [team-plugin]: https://grimoire.rs/guides/team-plugin.html
 [agent-plugins]: https://agent-plugins.org/
 [artifacts-readme]: https://grimoire.rs/artifacts.html#well-known-assets
 [grimignore]: https://grimoire.rs/artifacts.html#grimignore
 [ci]: https://grimoire.rs/ci.html
+[settings-ref]: https://grimoire.rs/settings.html
