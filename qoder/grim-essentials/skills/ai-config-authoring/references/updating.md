@@ -44,8 +44,11 @@ durable; update the numbers, keep the spine.
 - `warp skills directory site:warp.dev`
 - `kilo modes skills site:kilo.ai`
 - `agents skills shared pool which clients scan`
+- `codex hooks.json lifecycle events site:developers.openai.com`
+- `copilot hooks reference declarative json events site:docs.github.com`
 - `AGENTS.md standard adoption nearest file precedence`
 - `skills not activating subagent headless`
+- `grim export marketplace plugin admission site:grimoire.rs`
 - `anthropic effective context engineering attention budget`
 
 ## Further Reading
@@ -57,7 +60,10 @@ durable; update the numbers, keep the spine.
 - [Copilot: instructions support matrix][cop-matrix] /
   [agent skills][cop-skills] — surface support changes often.
 - [Codex: skills][cx-skills] / [subagents][cx-agents] — AGENTS.md-only
-  always-on surface, no rule mechanism; re-verify both claims here.
+  always-on surface, no rule mechanism; re-verify both claims here. Codex
+  *does* have a hook surface (a committed `hooks.json`), which is why it now
+  sits in the hook row of the vendor-disagreement table; re-verify the file
+  location and its event vocabulary.
 - [Cursor: subagents][cur-agents] / [Kiro][kiro] — the newer clients with
   both rule scoping and (Cursor only) an agent file; re-verify the
   comma-in-glob split and Kiro's user-scope steering bug.
@@ -75,6 +81,11 @@ durable; update the numbers, keep the spine.
   them read `.agents/skills`** — pool membership is the fastest-moving
   claim in this package, and reading the pool is not the same as writing
   to it.
+- grim's own docs, for the hook-client and plugin-marketplace claims in
+  `choosing-types.md`: [clients][g-clients] (hook gaps: `#gap-codex-hooks`,
+  `#gap-qoder-hooks`), [plugin admission][g-admission] (which kinds each
+  plugin format carries), and [Host a plugin marketplace][g-host]. Re-check
+  the hook-capable client count and the admission table.
 - [Skill authoring best practices][bp] and the
   [official example skills][repo] — re-measure body-length norms there.
 
@@ -106,3 +117,6 @@ durable; update the numbers, keep the spine.
 [kilo]: https://kilo.ai
 [bp]: https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices
 [repo]: https://github.com/anthropics/skills
+[g-clients]: https://grimoire.rs/clients.html
+[g-admission]: https://grimoire.rs/commands.html#export-plugin-admission
+[g-host]: https://grimoire.rs/guides/hosting-a-marketplace.html

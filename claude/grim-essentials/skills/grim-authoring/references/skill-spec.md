@@ -96,8 +96,10 @@ cost: `README.md` (human-facing readme) and `logo.png`/`logo.svg` (a
 catalog/gallery icon). They are ordinary tree files — no frontmatter, no
 schema meaning — that catalog UIs look for by convention and consumers
 can pull with `grim fetch <ref> --path README.md`
-([well-known assets][well-known]). For a readme at the *repository*
-level (uniform across every kind, not installed with the tree), publish
+([well-known assets][well-known]). They ship with the package; a
+`<name>.README.md` or `<name>.png` *beside* the skill directory feeds the
+catalog description instead and is never packed. For a readme at the
+*repository* level (uniform across every kind, not installed with the tree), publish
 a description companion instead — see
 [release-checklist.md](release-checklist.md#description-companion).
 
@@ -158,6 +160,7 @@ All hard errors exit 65 (DataError) at `grim build` / `grim release`.
 | Malformed YAML; `name` or `description` absent | Hard error — frontmatter parse |
 | Frontmatter `name` ≠ directory name | Hard error — name mismatch |
 | Directory name violates the name charset | Hard error — invalid name |
+| A `.claude-plugin` entry at the skill root (any case; grim 0.17.0 and later) | Hard error, reason `skill-plugin-manifest`, also at install. Ship client-loaded code as a `mod`, the plugin through a marketplace, or list the entry in `.grimignore`. Upgrade note: `https://grimoire.rs/upgrading.html#skill-plugin-manifest` |
 | `description` empty/whitespace or > 1024 chars | Hard error — rejected at parse |
 | `metadata.repository` not `https://` | Hard error — invalid repository URL |
 | `keywords` written as a YAML list | Not accepted — must be one comma string |

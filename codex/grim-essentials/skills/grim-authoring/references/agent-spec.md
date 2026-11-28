@@ -71,7 +71,7 @@ whether your audience is in that set:
 |---|---|---|
 | Claude Code | `claude.*` (richest) | The canonical format itself — a plain agent installs byte-identical, no provenance comment |
 | OpenCode | `opencode.*` | Drops `name` (the filename is its identity) and drops `tools` with a warning (deprecated upstream in favor of `permission`) |
-| Copilot | `copilot.*` | Emits `name`, `description`, `model`, and `tools` as a YAML list; `copilot.disable-model-invocation`/`copilot.user-invocable` (bool) and `copilot.target` (`vscode` \| `github-copilot`) project straight through |
+| Copilot | `copilot.*` | Emits `name`, `description`, `model`, and `tools` as a YAML list; `copilot.disable-model-invocation`/`copilot.user-invocable` (bool) and `copilot.target` (`vscode` \| `github-copilot`), `copilot.include-custom-instructions` (bool), `copilot.reasoning-effort`, `copilot.models` (comma list) and `copilot.model-policy` (`preferred` \| `required`) project straight through |
 | Codex | `codex.*` | **TOML** (see below) |
 | Cursor | `cursor.*` | Markdown frontmatter; the common `tools` has no equivalent and is dropped with a warning |
 | Gemini CLI | `gemini.*` | Markdown frontmatter; Gemini loads agents only when its `experimental.enableAgents` setting is on (the default) |
@@ -79,7 +79,7 @@ whether your audience is in that set:
 | Droid | `droid.*` | Markdown frontmatter at `.factory/droids/`; `tools` emitted as a YAML list of tool ids, `model` verbatim (`inherit` included), `droid.reasoning-effort` → `reasoningEffort`. A name containing `.` is skipped for Droid with a warning; a dotted frontmatter `name` under an accepted binding is written as the binding name. A lone `tools` category still renders as a list, which Droid reads as a tool id |
 | Antigravity | *(none yet)* | Markdown frontmatter; `tools` emitted as a YAML list (upstream types it `string[]`). The namespace is reserved but its agent registry is empty, so an `antigravity.*` key warns and drops |
 | Goose | *(none)* | Markdown frontmatter at `.goose/agents/`; `name`, `description` and `model` only, `tools` dropped with a warning |
-| Kilo | `kilo.*` | OpenCode's shape: drops `name` (the filename is its identity) and drops `tools` with a warning; `kilo.mode`, `kilo.temperature`, `kilo.steps` and friends lift |
+| Kilo | `kilo.*` | OpenCode's shape: drops `name` (the filename is its identity) and drops `tools` with a warning; `kilo.mode`, `kilo.temperature`, `kilo.steps` and friends lift. At global scope an agent whose body holds `{env:` or `{file:` is skipped for Kilo with a warning, since Kilo expands them there; project scope writes the body as published |
 | Qoder | *(none yet)* | Claude's shape — a plain agent installs byte-identical, no provenance comment. The namespace is reserved but its agent registry is empty, so a `qoder.*` key warns and drops |
 
 Every emit but Claude's carries a provenance comment. **Every other
@@ -111,14 +111,19 @@ Full matrix: [emit matrix][emit-matrix] · [client compatibility][clients].
 - **No object-valued vendor fields** — `metadata` is string-valued, so
   Claude's `mcpServers`/`hooks`, OpenCode's `permission`, and Copilot's
   `mcp-servers` cannot be authored; add them post-install.
-- **No support directory** — an agent installs as exactly one file
-  (`<name>.md`, or `<name>.toml` for Codex). A sibling directory sharing
-  the stem is read **only** for the well-known companions `README.md`,
-  `logo.png`, and `logo.svg`:
-  those three ride the published layer (under `<name>/…`, for
-  `grim fetch --path` and catalog UIs) but are never installed to a
-  client; every other file in that directory is ignored
-  ([well-known assets][well-known]).
+- **No support directory, and no packed companions** — an agent installs
+  as exactly one file (`<name>.md`, or `<name>.toml` for Codex), and since
+  grim 0.16.0 the package is that `.md` alone. A sibling directory sharing
+  the stem (`agents/<name>/`) may hold only `README.md`, `logo.png` and
+  `logo.svg`, and **none of them is packed**: they feed the catalog
+  description only (`<name>/README.md`, else `<name>.README.md` beside the
+  agent; logo likewise, `<name>/logo.svg|png`, else `<name>.svg|png`). Any
+  other file there refuses the build (exit 65, `an agent's directory may hold
+  only README.md, logo.png and logo.svg`). Older grims packed the three
+  companions and ignored the rest silently. Files an agent needs at run time
+  belong in a skill it requires (`grim.requires.skills.<name>` in its
+  `metadata`). A `.grimignore` in that directory is itself a stray file.
+  Description lookup: [release-checklist.md](release-checklist.md#description-companion).
 - **No model translation** — see vendor overrides above.
 
 ## Minimal Example
@@ -143,7 +148,7 @@ You are a code reviewer. Examine the diff...
 | `name` ≠ file stem | Hard error, exit 65 — name mismatch |
 | Known vendor key, bad literal (`claude.permission-mode: yolo`) | Hard error, exit 65 — publish stops |
 | Typo'd own-namespace key (`opencode.temprature`) | Warning + dropped |
-| Sibling dir sharing the stem | Only `README.md`/`logo.png`/`logo.svg` pack (catalog companions, never installed); everything else silently ignored |
+| Sibling dir sharing the stem holds any file but `README.md`/`logo.png`/`logo.svg` | Hard error, exit 65 (since 0.16.0; earlier grims ignored it). The three allowed files are catalog-only and never packed |
 | Vendor key shadowing a common field | Silent override per vendor — a feature, but a surprise when unintended |
 | `repository` not `https://` | Hard error, exit 65 |
 
@@ -154,10 +159,11 @@ You are a code reviewer. Examine the diff...
 - [Override precedence][precedence] — the shadow semantics in full.
 - [Agent vendor registries][registries] — every projectable key per vendor.
 - [Catalog metadata for agents][pub-agent] — `metadata` map placement.
+- [Upgrading: agent companions][upgrading] — what changed in 0.16.0.
 
 [agents-doc]: https://grimoire.rs/agents.html
 [artifacts-agents]: https://grimoire.rs/artifacts.html#agents
-[well-known]: https://grimoire.rs/artifacts.html#well-known-assets
+[upgrading]: https://grimoire.rs/upgrading.html#agent-companions
 [precedence]: https://grimoire.rs/agents.html#override-precedence
 [emit-matrix]: https://grimoire.rs/agents.html#emit-matrix
 [clients]: https://grimoire.rs/clients.html

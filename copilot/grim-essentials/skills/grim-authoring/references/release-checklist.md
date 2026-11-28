@@ -15,7 +15,10 @@ reaches a registry:
 
 1. **Catalog metadata authored** — the [default set](#metadata-defaults)
    below, in the right per-kind location: skill/agent → `metadata` map;
-   rule → top-level frontmatter; mcp/bundle → top-level TOML. If this
+   rule → top-level frontmatter; mcp/bundle → top-level TOML. **A hook is
+   the exception with nowhere to put any of it** — `hook.toml` accepts only
+   `schema`, `name`, `description`, and `[[hooks]]`, so every catalog key is
+   a hard parse error (65) and `description` carries the whole blurb. If this
    release retires a package, set the `deprecated` notice in the same
    location (a re-release without it clears the flag), and point consumers
    at the successor with `replaced-by` — authored independently of
@@ -31,10 +34,20 @@ reaches a registry:
 3. **Agents: `--kind agent` on both build and release** — a forgotten
    flag publishes a rule, with only a warning. **MCP servers: `--kind
    mcp` likewise** — though there a forgotten flag errors with a hint.
+   **Hooks need no flag** (a directory carrying `hook.toml` infers as
+   `hook`, and that arm is checked before the skill arm) — but read
+   `grim build`'s reported `Kind` column anyway, because the same ordering
+   means a stray `hook.toml` inside a *skill* tree flips the kind silently.
 4. **Bundles: members published first** — a bundle referencing unpushed
    members breaks the consumer's `grim lock`, not your release.
-5. **`grim release … --dry-run`** — prints the exact push plan: every
-   tag and the digest each will point at, without touching the registry.
+5. **Hooks: the handler names an interpreter, not the payload file** —
+   `argv = ["sh", "${GRIM_HOOK_DIR}/guard.sh"]`, never
+   `command = "./guard.sh"`. A registry-delivered payload arrives without
+   an exec bit, so the direct form is refused at build (65). Full rule:
+   [hook-spec.md](hook-spec.md#payload-not-executable).
+6. **`grim release … --dry-run`** — prints the exact push plan: every
+   tag and the digest each will point at, and never writes to the registry (a
+   cascading dry run reads the floats it would move).
 
 ### Metadata Defaults {#metadata-defaults}
 
@@ -101,6 +114,15 @@ for everyone already on them. Full rules: [Batch publishing][batch-publish].
 - **Cascade tags.** Releasing `1.2.3` also moves the floating tags
   `1`, `1.2`, and `latest` to the new digest — that is how consumers
   tracking `:1` pick up your patch on `grim update`. Implication: a
+  cascade never moves a floating tag off a higher release: a `2.3.7` backport
+  released after `2.9.0` moves `2.3` and leaves `2` and `latest` on `2.9.0`
+  (reported in `floats_kept`). After the tags move, grim re-lists the
+  repository and moves any float a concurrent lower release left below a
+  higher exact release onward to that release (reported in
+  `floats_repaired`). Still run releases one at a time — a CI concurrency
+  group per repository — with the repair as the safety net, not the plan:
+  tags have no compare-and-set, two repairs can cross, and a failed
+  repair only warns. A
   release is immediately visible to every floating consumer; do not
   release a breaking change under the same major.
 - **Immutability gate.** An exact-version tag that already exists and
@@ -109,6 +131,11 @@ for everyone already on them. Full rules: [Batch publishing][batch-publish].
   bytes from the **same commit** is idempotent and always fine; from a
   *different* commit the provenance differs, so the digest does too and the
   release is refused unless `--force` (or `--no-git`, see below).
+- **Compression is opt-in.** `--compression gzip` (or `publish.toml`
+  `compression`) publishes skills, rules, agents and hooks as a gzip layer;
+  bundles and MCP ignore it. Consumers need grim 0.15.0 or later, so compress
+  new versions only and never `--force` an existing one. See
+  [Compressing layers][compression].
 - **Build provenance is on by default.** `grim build`/`release`/`publish`
   stamp the source commit and its date onto the manifest as OCI annotations.
   Neither value comes from the clock — `created` is the commit's own date, or
@@ -122,16 +149,21 @@ for everyone already on them. Full rules: [Batch publishing][batch-publish].
     say nothing about where it was built.
 
   Confirm the exact behavior with `grim release --help`.
-- **Bundles: `--pin`** resolves every floating member to a digest at
+- **`--pin`** resolves every floating bundle member to a digest at
   release time for a self-contained, reproducible bundle
-  ([pinning][pin]).
+  ([pinning][pin]). For any other kind it freezes the references in the
+  artifact's declared dependencies.
+- **Dependent artifacts need grim 0.16.0 or later** to release, and to
+  install. Release the first dependent version under a new major tag, not an
+  existing floating one.
 
 ## Batch Publish
 
 `grim publish` releases every package declared in a `publish.toml`
 manifest: whole-manifest validation before any push, then a fixed kind
-order (skills → rules → agents → mcp → bundles) so bundle members always
-exist first. Semantics to know ([full reference][batch-publish]):
+order (skills → rules → agents → mcp → hooks → bundles), moving an entry
+after any same-manifest entry it requires, so members and dependencies
+always exist first. A requires cycle exits 65 before any push. Semantics to know ([full reference][batch-publish]):
 
 - **One version for the catalog.** A top-level `version` covers every
   entry that omits its own (or writes the literal `${version}`); an
@@ -173,7 +205,7 @@ exist first. Semantics to know ([full reference][batch-publish]):
   misconfiguration exits 64 ([announcing][announcing]).
 - Confirm flags with `grim publish --help`; `--dry-run` prints the full
   plan (including planned description companions) with zero registry
-  writes.
+  writes; a cascading run reads the floats.
 
 ## Description Companion
 
@@ -191,10 +223,25 @@ the reserved tag is hidden from tag listings. Consumers read it with
 - **`[description]` table** decouples layout: `readme`/`logo`/`changelog`
   map onto fixed wire names; `include` globs add extra assets (each keeps
   its manifest-relative path — README-referenced images keep working).
+- **Package README and logo**: an entry's own README and logo replace the
+  companion's; first hit wins, and each falls back independently to the
+  top level. For a skill or hook at `P` named `S`: `P/README.md`, then
+  `S.README.md` beside `P`; logo `P/logo.svg`, `P/logo.png`, then `S.svg`,
+  `S.png` beside `P`. For a rule or agent at `D/S.md`: `D/S/README.md`, then
+  `D/S.README.md`; logo `D/S/logo.*`, then `D/S.svg`, `D/S.png`. For an mcp,
+  bundle or settings package at `D/S.toml`: `D/S.README.md`; logo `D/S.svg`,
+  `D/S.png`. A file inside a skill or hook directory ships with the package;
+  a sibling beside it does not. `[description] entry_readme = false` turns
+  the README lookup off (boolean only); the logo lookup has no toggle. A
+  repository with package READMEs publishes a different companion on its next
+  run.
+- **Precedence**: per-entry table, then top-level table, then the
+  conventional files. A top-level table with files but no `readme`, next to
+  a root `README.md`, warns that the README is not published.
 - **Per-entry `[<kind>.<name>.description]` REPLACES the top-level table**
   (it is not merged — repeat shared members); `description = false` opts
-  one entry out; top-level `publish = false` kills the companion
-  manifest-wide.
+  one entry out; top-level `publish = false` turns off the shared
+  companion, and an entry with its own description table still gets one.
 - **Hard gates**: an explicit path that does not exist, a table resolving
   to zero files, or any companion path escaping the manifest directory
   (`..`, absolute, symlink escape) is a data error (65). A user-supplied
@@ -221,10 +268,21 @@ Symptom → cause → fix:
 | `--git` on a non-git path | `--git` passed to build/release on an artifact path not inside a git repository, or no `git` on the host | Build/release an artifact that lives inside a git repo (with `git` installed), or drop `--git` — the default already derives what it can and never fails (confirm with `grim release --help`) |
 | Entry has no version | `publish.toml` entry with no per-entry `version`, no top-level `version`, no `--version` | Set the top-level `version` (or the entry's own) |
 | Companion path missing / escapes | Explicit `[description]` path that does not exist, resolves to zero files, or reaches outside the manifest dir (`..`, absolute, symlink) | Move the file inside the manifest directory; copy root-level assets in before publishing |
+| "runs the payload file … directly; a payload delivered through a registry is not executable" | A hook handler's first token names a file in the payload tree — the exec bit never survives an OCI pull | Name an interpreter: `argv = ["sh", "${GRIM_HOOK_DIR}/guard.sh"]` |
+| "unknown field 'summary', expected one of 'schema', 'name', 'description', 'hooks'" | Catalog metadata written into a `hook.toml`, which is a strict document with no such surface | Delete the key; fold the text into the hook's `description` |
+| "tier … is not valid at event …" | `mutator` outside `PreToolUse`, or `gatekeeper` on an event no client can block at | Change the tier, or the event — **never** relocate a gatekeeper to a later moment |
+| "invalid matcher …" / "matcher of N bytes exceeds…" / "an empty matcher is ambiguous" | A regex, a stray character, > 256 bytes, or `matcher = ""` | Use grim's glob dialect (`[A-Za-z0-9_*?./-\|]`); omit the key to match every tool |
+| "declares timeout = 0; it must be between 1 and 3600 seconds" | A hook entry whose `timeout` is below 1 or above 3600 seconds | Set `timeout` within that range, or omit it for the default 30 |
+| "hook artifact name 'bin' is reserved" | Hook artifact named `bin`, `consent`, `grim-hook`, `dispatch.json` or another name grim keeps under `$GRIM_HOME/hooks` — grim's own launcher namespace | Rename the directory and the manifest `name` together |
+| "declares both 'argv' and 'command'" / "declares no handler" | A hook entry with two handlers or none | Keep exactly one; prefer `argv` |
+| "key '…' is not a per-client override table" | A `[hooks.<x>]` table whose `<x>` is not a client grim supports (typo'd namespace) | Fix the client name — there is no free-form namespace |
 
-Bundle source errors (typo'd key, non-qualified member ref, > 512
-members) surface as config/parse failures rather than 65 — see
-[bundle-spec.md](bundle-spec.md). If the message fits no row, run
+Bundle source errors (typo'd key, an `[mcp]`/`[hooks]` member table,
+non-qualified member ref, > 512 members) surface as config/parse failures
+rather than 65 — see
+[bundle-spec.md](bundle-spec.md). Every hook row above is a `grim build`
+refusal; the full set with reproductions is
+[hook-spec.md](hook-spec.md#validation-pitfalls). If the message fits no row, run
 `grim build --format json` for the structured detail and check
 [publish-time validation][publish-val].
 
@@ -237,6 +295,7 @@ members) surface as config/parse failures rather than 65 — see
 [validate]: https://grimoire.rs/publishing.html#validate-before-you-push
 [dry-run]: https://grimoire.rs/publishing.html#dry-runs-and-overwrites
 [cascade]: https://grimoire.rs/publishing.html#cascade-tags
+[compression]: https://grimoire.rs/publishing.html#compression
 [pin]: https://grimoire.rs/publishing.html#pin
 [publish-val]: https://grimoire.rs/vendor-metadata.html#publish-validation
 [batch-publish]: https://grimoire.rs/publishing.html#batch-publish

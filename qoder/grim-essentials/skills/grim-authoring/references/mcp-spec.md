@@ -62,7 +62,7 @@ client drops it silently, nothing auth-critical lost:
 
 | Field | Projects for | Notes |
 |---|---|---|
-| `timeout` | Claude (`timeout`), OpenCode (`timeout`), Qoder (`timeout`), Codex (`startup_timeout_ms`) | Startup/tool-fetch timeout, milliseconds. Gemini drops it with a warning: its `timeout` bounds every tool call too |
+| `timeout` | Claude (`timeout`), OpenCode (`timeout`), Qoder (`timeout`), Codex (`startup_timeout_ms`), Junie (`timeout`, 1000 to 3600000 ms only, else warned) | Startup/tool-fetch timeout, milliseconds. Gemini drops it with a warning: its `timeout` bounds every tool call too |
 | `always_load` | Claude (`alwaysLoad`) only | Load the server eagerly at client startup |
 | `headers_helper` | Claude (`headersHelper`) only | Executable that produces fresh auth headers |
 | `cwd` | OpenCode (`cwd`), Gemini (`cwd`), Qoder (`cwd`), Warp (`working_directory`) | Working directory for the launched process (stdio only) |
@@ -71,10 +71,10 @@ client drops it silently, nothing auth-critical lost:
 
 `http`/`sse` only, every field optional — a structured OAuth client
 config, written only where a client carries **every** field it sets
-(lossless-or-skip): Claude all four, OpenCode all but
-`auth_server_metadata_url` (and `callback_port = 0` skips, since OpenCode
+(lossless-or-skip): Claude all but `authorization_server_issuer`, OpenCode
+`client_id`, `scopes` and `callback_port` (`callback_port = 0` skips, since OpenCode
 takes 1-65535), Zed a literal `client_id` alone (Zed expands no `${VAR}`,
-so a referenced id skips). Anywhere else the server is skipped with a
+so a referenced id skips), Copilot a literal `client_id` plus `scopes` (not in `.vscode/mcp.json`), Droid `client_id` plus an optional `authorization_server_issuer` (a client id without the issuer is written with a warning). Anywhere else the server is skipped with a
 warning naming the uncarried fields:
 
 | Field | Type | Notes |
@@ -83,6 +83,7 @@ warning naming the uncarried fields:
 | `scopes` | string list | Values may reference `${VAR}` |
 | `callback_port` | integer | Fixed localhost callback port for the auth redirect |
 | `auth_server_metadata_url` | string | RFC 8414 metadata URL; https-only; may reference `${VAR}` |
+| `authorization_server_issuer` | string | Authorization-server issuer URL; https-only. Droid requires it beside a client id |
 
 Deliberately **no `client_secret` field** — same rationale as `${VAR}`
 env references: a secret has no safe home in a published artifact.
@@ -132,9 +133,9 @@ no MCP config surface, so a descriptor writes nothing for them. What matters whi
   transport projects for **Claude only**; the `[server.oauth]` block for
   OpenCode, Zed, Copilot, and Droid, and only when the client carries every
   field set. Every other client skips such a descriptor with a warning. Set
-  just a literal `client_id` to reach all four (Copilot and Droid accept
-  only a literal `client_id`); a `${VAR}` id, or
-  `scopes`, drops Zed and Copilot; `auth_server_metadata_url` or
+  just a literal `client_id` to reach all four (Copilot also takes `scopes`,
+  Droid also the issuer); a `${VAR}` id, or
+  `scopes`, drops Zed; `auth_server_metadata_url` or
   `callback_port = 0` drops OpenCode too.
 - **Shape differences are grim's problem, not yours.** OpenCode receives
   `command` as ONE array (`["grim", "mcp"]`), Codex a
@@ -159,19 +160,29 @@ install` writes the descriptor as is):
 
 | Export for | `${CLAUDE_PLUGIN_ROOT}` / `${CLAUDE_PLUGIN_DATA}` | `${PLUGIN_ROOT}` / `${PLUGIN_DATA}` |
 |---|---|---|
-| `claude` | kept | renamed to Claude's names, in every field incl. `url` and headers |
-| `codex`, `cursor`, `copilot`, `agents` | renamed to the spec's names | kept |
+| `claude`, `qoder` (a `qoder` export needs grim 0.15.0) | kept | renamed to Claude's names, in every field incl. `url` and headers |
+| `codex`, `copilot`, `agents` | renamed to the spec's names | kept |
+| `cursor` | renamed to the spec's names, except the root: `${CURSOR_PLUGIN_ROOT}`; Cursor has no data variable (warned) | root renamed to `${CURSOR_PLUGIN_ROOT}`, data kept |
 | `droid`, `junie`, `openclaw` | kept | kept |
 
-**Portable advice:** put `${PLUGIN_ROOT}` / `${PLUGIN_DATA}` (or the
-Claude spelling) in `args` or `env` values. That works for `claude` and
-every Agent Plugins client. The Claude rendering has no `cwd`.
+**Portable advice:** put `${PLUGIN_ROOT}` (or the Claude spelling) in
+`args` or `env` values. That works for `claude`, `qoder` (a `qoder` export
+needs grim 0.15.0) and every Agent Plugins client. `${PLUGIN_DATA}` is not
+portable to `cursor`, which has no data variable: it stays as written and
+is exported with a warning. The Claude rendering has no `cwd`.
 
 For an Agent Plugins export (`codex`, `cursor`, `copilot`, `agents`), a
 `${…}` reference in `command`, `url`, an env key or a header omits the
 server `not-representable` (the spec expands nothing there). Any other
 `${VAR}` in `args`, env values or `cwd` is exported with a warning: those
 clients may pass it through literally.
+
+## Requires
+
+A `[requires.<table>]` table (`skills`, `rules`, `agents`, `mcp`, `hooks`,
+`bundles`) declares artifacts the server needs. `grim build` splits it off
+before packing, so the descriptor bytes do not change. Needs grim 0.16.0 or
+later; see [Declaring Dependencies](../SKILL.md#declaring-dependencies).
 
 ## Example
 
@@ -194,7 +205,7 @@ env = { GRIM_HOME = "${GRIM_HOME}" }
 - `description` missing or whitespace-only → 65.
 - `url` on a stdio server, or `command`/`args`/`env` on a remote one → 65.
 - `oauth` on `stdio`/`ws`, `cwd` on a remote, `headers_helper` on stdio,
-  or a non-https `auth_server_metadata_url` → 65.
+  or a non-https `auth_server_metadata_url` or `authorization_server_issuer` → 65.
 - `${VAR:-fallback}`, `${1BAD}`, `${UNCLOSED` anywhere in a string value → 65.
 
 The required `description` field is the descriptor's prose and becomes the
